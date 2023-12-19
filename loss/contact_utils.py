@@ -1,10 +1,20 @@
 import torch
+import pickle
+from functools import lru_cache
+
+
+@lru_cache(maxsize=128)
+def load_contacts(save_contact_paths="assets/contact_zones.pkl", display=False):
+    with open(save_contact_paths, "rb") as p_f:
+        contact_data = pickle.load(p_f)
+    hand_verts = contact_data["verts"]
+    return hand_verts, contact_data["contact_zones"]
 
 
 def batch_mesh_contains_points(
     ray_origins,
     obj_triangles,
-    direction=torch.Tensor([0.4395064455, 0.617598629942, 0.652231566745]).cuda(),
+    direction=torch.Tensor([0.4395064455, 0.617598629942, 0.652231566745]),
 ):
     """Times efficient but memory greedy !
     Computes ALL ray/triangle intersections and then counts them to determine
@@ -17,6 +27,7 @@ def batch_mesh_contains_points(
     Returns:
     exterior: (batch_size, point_nb) 1 if the point is outside mesh, 0 else
     """
+    direction = direction.to(ray_origins.device)
     tol_thresh = 0.0000001
     # ray_origins.requires_grad = False
     # obj_triangles.requires_grad = False
