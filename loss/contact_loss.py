@@ -1,5 +1,6 @@
 import torch
 from . import contact_utils
+import numpy as np
 
 
 def batch_index_select(inp, dim, index):
@@ -50,7 +51,10 @@ def contact_loss(
     collision_mode="dist_tanh",
     contact_target="obj",
     contact_sym=False,
-    contact_zones="zones",
+    contact_zones="gen",
+    sampled_verts=None,
+    contacts_path=None,
+    partition_path=None,
 ):
     # exterior mask
     obj_triangles = obj_verts_pt[:, obj_faces]
@@ -61,9 +65,9 @@ def contact_loss(
 
     # min vertex pairs between hand and object
     dists = batch_pairwise_dist(hand_verts_pt, obj_verts_pt)
-    mins12, min12idxs = torch.min(dists, 1)
-    mins21, min21idxs = torch.min(dists, 2)
-    results_close = batch_index_select(obj_verts_pt, 1, min21idxs)
+    minoh, minoh_idxs = torch.min(dists, 1)
+    minho, minho_idxs = torch.min(dists, 2)
+    results_close = batch_index_select(obj_verts_pt, 1, minho_idxs)
 
     # d (ObMan)
     if contact_target == "all":
@@ -89,17 +93,51 @@ def contact_loss(
             raise ValueError(
                 "contact_target {} not in [all|obj|hand]".format(contact_target)
             )
-        below_dist = mins21 < (contact_thresh**2)
+        below_dist = minho < (contact_thresh**2)
     elif contact_mode == "dist":
         contact_vals = anchor_dists
-        below_dist = mins21 < contact_thresh
+        below_dist = minho < contact_thresh
     elif contact_mode == "dist_tanh":
         contact_vals = contact_thresh * torch.tanh(anchor_dists / contact_thresh)
-        below_dist = torch.ones_like(mins21).byte()
+        below_dist = torch.ones_like(minho).byte()
     else:
         raise ValueError(
             "contact_mode {} not in [dist_sq|dist|dist_tanh]".format(contact_mode)
         )
+
+    # l of attraction loss when partition is given
+    if contact_zones == "gen":
+        assert sampled_verts is not None
+        assert contacts_path is not None and partition_path is not None
+        _, contact_zone = contact_utils.load_contacts(
+            "assets/contact_zones.pkl", display=True
+        )  # palm, index, middle, ring, pinky, thumb
+        partition_object = torch.from_numpy(np.load(partition_path)).to(
+            obj_verts_pt.device
+        )
+        handpart_lookup = [[], [4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14, 15], [2, 3]]
+        contact_vals_part = torch.zeros_like(minho)
+        below_part = torch.ones_like(minho).byte()
+        for i, zone_idxs in contact_zone.items():
+            handpart = handpart_lookup[i]
+            if len(handpart) == 0:
+                continue
+            partmask = torch.zeros_like(partition_object, dtype=torch.bool)
+            for part in handpart:
+                partmask = torch.logical_or(partmask, (partition_object == part))
+            hand_part = hand_verts_pt[:, zone_idxs]
+            obj_part = sampled_verts[:, partmask]
+            dists_part = batch_pairwise_dist(hand_part, obj_part)
+            minho_part, minho_part_idxs = torch.min(dists_part, 2)
+            close_part = batch_index_select(obj_part, 1, minho_part_idxs)
+            assert contact_target == "obj", "Not implemented"
+            anchor_part = torch.norm(close_part - hand_part.detach(), 2, 2)
+            assert contact_mode == "dist_tanh", "Not implemented"
+            contact_vals_part[:, zone_idxs] = contact_thresh * torch.tanh(
+                anchor_part / contact_thresh
+            )
+        contact_vals = contact_vals_part
+        below_dist = below_part
 
     # l of repulsion loss (ObMan)
     if collision_mode == "dist_sq":
@@ -130,12 +168,12 @@ def contact_loss(
         tips = torch.zeros_like(missed_mask)
         tips[:, tip_idxs] = 1
         missed_mask = missed_mask & tips
-    elif contact_zones == "zones":
+    elif contact_zones in ["zones", "gen"]:
         _, contact_zones = contact_utils.load_contacts("assets/contact_zones.pkl")
         contact_matching = torch.zeros_like(missed_mask)
-        for zone_idx, zone_idxs in contact_zones.items():
-            min_zone_vals, min_zone_idxs = mins21[:, zone_idxs].min(1)
-            cont_idxs = mins12.new(zone_idxs)[min_zone_idxs]
+        for _, zone_idxs in contact_zones.items():
+            min_zone_vals, min_zone_idxs = minho[:, zone_idxs].min(1)
+            cont_idxs = minoh.new(zone_idxs)[min_zone_idxs]
             # For each batch keep the closest point from the contact zone
             contact_matching[
                 [torch.range(0, len(cont_idxs) - 1).long(), cont_idxs.long()]
@@ -152,8 +190,8 @@ def contact_loss(
     missed_loss = masked_mean_loss(contact_vals, missed_mask)  # attraction loss
     penetr_loss = masked_mean_loss(collision_vals, penetr_mask)  # repulsion loss
     if contact_sym:
-        obj2hand_dists = torch.sqrt(mins12)
-        sym_below_dist = mins12 < contact_thresh
+        obj2hand_dists = torch.sqrt(minoh)
+        sym_below_dist = minoh < contact_thresh
         sym_loss = masked_mean_loss(obj2hand_dists, sym_below_dist)
         missed_loss = missed_loss + sym_loss
 
@@ -164,7 +202,7 @@ def contact_loss(
         "attraction_masks": missed_mask,
         "repulsion_masks": penetr_mask,
         "contact_points": results_close,
-        "min_dists": mins21,
+        "min_dists": minho,
     }
     metrics = {
         "max_penetr": max_penetr_depth,
