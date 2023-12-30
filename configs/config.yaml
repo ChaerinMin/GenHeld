@@ -1,0 +1,12 @@
+defaults:
+  - dataset: manually
+  - optimization: contactgen
+  - _self_
+
+debug: False
+
+results_dir: ???
+
+hydra:
+  job:
+    chdir: False 

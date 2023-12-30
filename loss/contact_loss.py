@@ -53,11 +53,16 @@ def contact_loss(
     contact_sym=False,
     contact_zones="gen",
     sampled_verts=None,
-    contacts_path=None,
-    partition_path=None,
+    contact_object=None,
+    partition_object=None,
 ):
+    batch_size = hand_verts_pt.shape[0]
+
     # exterior mask
-    obj_triangles = obj_verts_pt[:, obj_faces]
+    obj_triangles = []
+    for b in range(batch_size):
+        obj_triangles.append(obj_verts_pt[b, obj_faces[b]])
+    obj_triangles = torch.stack(obj_triangles, dim=0)
     exterior = contact_utils.batch_mesh_contains_points(
         hand_verts_pt.detach(), obj_triangles.detach()
     )
@@ -108,13 +113,10 @@ def contact_loss(
     # l of attraction loss when partition is given
     if contact_zones == "gen":
         assert sampled_verts is not None
-        assert contacts_path is not None and partition_path is not None
+        assert contact_object is not None and partition_object is not None
         _, contact_zone = contact_utils.load_contacts(
             "assets/contact_zones.pkl", display=True
         )  # palm, index, middle, ring, pinky, thumb
-        partition_object = torch.from_numpy(np.load(partition_path)).to(
-            obj_verts_pt.device
-        )
         handpart_lookup = [[], [4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14, 15], [2, 3]]
         contact_vals_part = torch.zeros_like(minho)
         below_part = torch.ones_like(minho).byte()
@@ -122,20 +124,23 @@ def contact_loss(
             handpart = handpart_lookup[i]
             if len(handpart) == 0:
                 continue
-            partmask = torch.zeros_like(partition_object, dtype=torch.bool)
-            for part in handpart:
-                partmask = torch.logical_or(partmask, (partition_object == part))
             hand_part = hand_verts_pt[:, zone_idxs]
-            obj_part = sampled_verts[:, partmask]
-            dists_part = batch_pairwise_dist(hand_part, obj_part)
-            minho_part, minho_part_idxs = torch.min(dists_part, 2)
-            close_part = batch_index_select(obj_part, 1, minho_part_idxs)
-            assert contact_target == "obj", "Not implemented"
-            anchor_part = torch.norm(close_part - hand_part.detach(), 2, 2)
-            assert contact_mode == "dist_tanh", "Not implemented"
-            contact_vals_part[:, zone_idxs] = contact_thresh * torch.tanh(
-                anchor_part / contact_thresh
-            )
+            for b in range(batch_size):
+                partmask = torch.zeros_like(partition_object[b], dtype=torch.bool)
+                for part in handpart:
+                    partmask = torch.logical_or(partmask, (partition_object[b] == part))
+                obj_part = sampled_verts[b, partmask]
+                dists_part = batch_pairwise_dist(hand_part, obj_part.unsqueeze(0))
+                minho_part, minho_part_idxs = torch.min(dists_part, 2)
+                close_part = batch_index_select(
+                    obj_part.unsqueeze(0), 1, minho_part_idxs
+                )
+                assert contact_target == "obj", "Not implemented"
+                anchor_part = torch.norm(close_part - hand_part.detach(), 2, 2)
+                assert contact_mode == "dist_tanh", "Not implemented"
+                contact_vals_part[b : b + 1, zone_idxs] = contact_thresh * torch.tanh(
+                    anchor_part / contact_thresh
+                )
         contact_vals = contact_vals_part
         below_dist = below_part
 

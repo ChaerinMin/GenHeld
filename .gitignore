@@ -1,3 +1,4 @@
 results/
 wandb/
 __pycache__/
+outputs/
