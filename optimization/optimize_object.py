@@ -119,6 +119,7 @@ class OptimizeObject:
                     hand_faces,
                     new_object_verts,
                     object_faces,
+                    contact_zones=self.opt.loss.contact_zones,
                     sampled_verts=new_sampled_verts,
                     contact_object=contact_object,
                     partition_object=partition_object,

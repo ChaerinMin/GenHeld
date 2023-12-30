@@ -3,7 +3,7 @@ defaults:
   - optimization: contactgen
   - _self_
 
-debug: False
+debug: True
 
 results_dir: ???
 

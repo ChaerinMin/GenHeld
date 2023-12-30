@@ -1,12 +1,14 @@
 _target_: optimization.optimize_object.OptimizeObject
 
-Niters: 2000
+opt:
+  Niters: 2000
 
-plot:
-  log_period: 100
-  mesh_period: 19
-  pc_period: 1000000
+  plot:
+    log_period: 100
+    mesh_period: 19
+    pc_period: 1000000
 
-loss:
-  attraction_weight: 0.1
-  repulsion_weight: 0.9
+  loss:
+    contact_zones: "zones"
+    attraction_weight: 0.1
+    repulsion_weight: 0.9

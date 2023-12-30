@@ -5,6 +5,7 @@ import wandb
 import logging
 import time
 from hydra.utils import instantiate
+from omegaconf import OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ def main(cfg):
         logger.warning("CPU only, this will be slow!")
 
     # loggers
+    wandb.config = OmegaConf.to_container(
+        cfg, resolve=True, throw_on_missing=True
+    )
     wandb_mode = "disabled" if cfg.debug else "online"
     writer = wandb.init(project="optimize_object", mode=wandb_mode)
     logger.info(f"System timezone is {time.strftime('%Z')}")

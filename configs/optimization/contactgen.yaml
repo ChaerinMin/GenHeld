@@ -9,5 +9,6 @@ opt:
     pc_period: 1000000
 
   loss:
+    contact_zones: "gen"
     attraction_weight: 0.5
     repulsion_weight: 0.5

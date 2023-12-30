@@ -130,13 +130,18 @@ def contact_loss(
                 for part in handpart:
                     partmask = torch.logical_or(partmask, (partition_object[b] == part))
                 obj_part = sampled_verts[b, partmask]
+                contact_part = contact_object[b, partmask]
                 dists_part = batch_pairwise_dist(hand_part, obj_part.unsqueeze(0))
                 minho_part, minho_part_idxs = torch.min(dists_part, 2)
                 close_part = batch_index_select(
                     obj_part.unsqueeze(0), 1, minho_part_idxs
                 )
+                close_weight = batch_index_select(
+                    contact_part.unsqueeze(0), 1, minho_part_idxs
+                ) 
                 assert contact_target == "obj", "Not implemented"
                 anchor_part = torch.norm(close_part - hand_part.detach(), 2, 2)
+                anchor_part = anchor_part * close_weight 
                 assert contact_mode == "dist_tanh", "Not implemented"
                 contact_vals_part[b : b + 1, zone_idxs] = contact_thresh * torch.tanh(
                     anchor_part / contact_thresh
