@@ -6,6 +6,7 @@ import logging
 import time
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
+from optimization.optimize_object import OptimizeObject
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,7 @@ def main(cfg):
 
     # main
     dataset = instantiate(cfg.dataset)
-    optimizer = instantiate(cfg.optimization, dataset=dataset)
-    setattr(optimizer, "cfg", cfg)
+    optimizer = OptimizeObject(cfg, dataset=dataset)
     optimizer.optimize(device, writer)
     return
 

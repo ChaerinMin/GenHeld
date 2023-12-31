@@ -1,14 +1,21 @@
-_target_: optimization.optimize_object.OptimizeObject
+Niters: 2000
+lr: 0.01
 
-opt:
-  Niters: 2000
+plot:
+  log_period: 100
+  mesh_period: 100
+  pc_period: 1000000
+  contact_period: 100
 
-  plot:
-    log_period: 100
-    mesh_period: 19
-    pc_period: 1000000
+loss:
+  attraction_weight: 0.5
+  repulsion_weight: 0.5
 
-  loss:
-    contact_zones: "gen"
-    attraction_weight: 0.5
-    repulsion_weight: 0.5
+contactloss:
+  contact_thresh: 5
+  contact_mode: "dist_tanh"
+  collision_thresh: 10
+  collision_mode: "dist_tanh"
+  contact_target: "obj"
+  contact_sym: False
+  contact_zones: "gen"

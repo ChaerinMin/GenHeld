@@ -10,6 +10,8 @@ import matplotlib as mpl
 from torch.utils.data import DataLoader
 import logging
 from dataset import Data
+from hydra.utils import instantiate
+from loss import ContactLoss
 
 mpl.rcParams["figure.dpi"] = 80
 logger = logging.getLogger(__name__)
@@ -36,9 +38,11 @@ def plot_pointcloud(points, title=""):
 
 
 class OptimizeObject:
-    def __init__(self, opt, dataset) -> None:
-        self.opt = opt
+    def __init__(self, cfg, dataset) -> None:
+        self.cfg = cfg
+        self.opt = cfg.optimization
         self.dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+        self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
         return
 
     def optimize(self, device, writer):
@@ -77,7 +81,7 @@ class OptimizeObject:
             attraction_losses = []
             repulsion_losses = []
             loop = tqdm(range(self.opt.Niters))
-            optimizer = torch.optim.Adam([s_params, t_params, R_params], lr=0.1)
+            optimizer = torch.optim.Adam([s_params, t_params, R_params], lr=self.opt.lr)
 
             for i in loop:
                 optimizer.zero_grad()
@@ -114,12 +118,11 @@ class OptimizeObject:
                         save_obj(out_obj_path, verts[b], faces[b])
 
                 # loss
-                attraction_loss, repulsion_loss, contact_info, metrics = contact_loss(
+                attraction_loss, repulsion_loss, contact_info, metrics = self.contact_loss(
                     hand_verts,
                     hand_faces,
                     new_object_verts,
                     object_faces,
-                    contact_zones=self.opt.loss.contact_zones,
                     sampled_verts=new_sampled_verts,
                     contact_object=contact_object,
                     partition_object=partition_object,
@@ -161,5 +164,9 @@ class OptimizeObject:
                         "iter": i,
                     }
                 )
+
+                # save contact point cloud 
+                if i % self.opt.plot.contact_period == 0:
+                    self.contact_loss.plot_contact(step=i)
 
         return

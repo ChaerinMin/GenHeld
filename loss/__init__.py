@@ -1,1 +1,1 @@
-from .contact_loss import contact_loss
+from .contact_loss import ContactLoss
