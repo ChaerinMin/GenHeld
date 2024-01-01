@@ -43,7 +43,7 @@ def masked_mean_loss(dists, mask):
     if valid_vals > 0:
         loss = (mask * dists).sum() / valid_vals
     else:
-        loss = torch.Tensor([0]).cuda()
+        loss = torch.tensor(0.0, dtype=dists.dtype, device=dists.device)
     return loss
 
 
@@ -53,14 +53,14 @@ class ContactLoss(Module):
         self.cfg = cfg
         for k, v in opt.items():
             setattr(self, k, v)
-        
+
         self.handpart_lookup = [
-                [],
-                [4, 5, 6],
-                [7, 8, 9],
-                [10, 11, 12],
-                [13, 14, 15],
-                [2, 3],
+            [],
+            [4, 5, 6],
+            [7, 8, 9],
+            [10, 11, 12],
+            [13, 14, 15],
+            [2, 3],
         ]
 
         # plot contact
@@ -83,31 +83,47 @@ class ContactLoss(Module):
         batch_size = hand_verts_pt.shape[0]
 
         # exterior mask
+        hand_triangles = []
+        for b in range(batch_size):
+            hand_triangles.append(hand_verts_pt[b, hand_faces[b]])
+        hand_triangles = torch.stack(hand_triangles, dim=0)
+        exterior_obj = contact_utils.batch_mesh_contains_points(
+            obj_verts_pt.detach(), hand_triangles.detach()
+        )
         obj_triangles = []
         for b in range(batch_size):
             obj_triangles.append(obj_verts_pt[b, obj_faces[b]])
         obj_triangles = torch.stack(obj_triangles, dim=0)
-        exterior = contact_utils.batch_mesh_contains_points(
+        exterior_hand = contact_utils.batch_mesh_contains_points(
             hand_verts_pt.detach(), obj_triangles.detach()
         )
-        penetr_mask = ~exterior
+        penetr_o_mask = ~exterior_obj
+        penetr_h_mask = ~exterior_hand
+
+        # plot penetration
+        self.penetr_obj = []
         self.penetr_hand = []
         for b in range(batch_size):
-            self.penetr_hand.append(hand_verts_pt.detach()[b, penetr_mask[b]])
+            self.penetr_obj.append(obj_verts_pt.detach()[b, penetr_o_mask[b]])
+            self.penetr_hand.append(hand_verts_pt.detach()[b, penetr_h_mask[b]])
 
         # min vertex pairs between hand and object
         dists = batch_pairwise_dist(hand_verts_pt, obj_verts_pt)
         minoh, minoh_idxs = torch.min(dists, 1)
         minho, minho_idxs = torch.min(dists, 2)
         results_close = batch_index_select(obj_verts_pt, 1, minho_idxs)
+        results_o_close = batch_index_select(hand_verts_pt, 1, minoh_idxs)
 
         # d (ObMan)
         if self.contact_target == "all":
             anchor_dists = torch.norm(results_close - hand_verts_pt, 2, 2)
+            anchor_o_dist = torch.norm(results_o_close - obj_verts_pt, 2, 2)
         elif self.contact_target == "obj":
             anchor_dists = torch.norm(results_close - hand_verts_pt.detach(), 2, 2)
+            anchor_o_dist = torch.norm(results_o_close.detach() - obj_verts_pt, 2, 2)
         elif self.contact_target == "hand":
             anchor_dists = torch.norm(results_close.detach() - hand_verts_pt, 2, 2)
+            anchor_o_dist = torch.norm(results_o_close - obj_verts_pt.detach(), 2, 2)
         else:
             raise ValueError(
                 "contact_target {} not in [all|obj|hand]".format(self.contact_target)
@@ -115,18 +131,7 @@ class ContactLoss(Module):
 
         # l of attraction loss (ObMan)
         if self.contact_mode == "dist_sq":
-            if self.contact_target == "all":
-                contact_vals = ((results_close - hand_verts_pt) ** 2).sum(2)
-            elif self.contact_target == "obj":
-                contact_vals = ((results_close - hand_verts_pt.detach()) ** 2).sum(2)
-            elif self.contact_target == "hand":
-                contact_vals = ((results_close.detach() - hand_verts_pt) ** 2).sum(2)
-            else:
-                raise ValueError(
-                    "contact_target {} not in [all|obj|hand]".format(
-                        self.contact_target
-                    )
-                )
+            contact_vals = anchor_dists ** 2
             below_dist = minho < (self.contact_thresh**2)
         elif self.contact_mode == "dist":
             contact_vals = anchor_dists
@@ -181,12 +186,24 @@ class ContactLoss(Module):
                     assert self.contact_target == "obj", "Not implemented"
                     anchor_part = torch.norm(close_part - hand_part.detach(), 2, 2)
                     anchor_part = anchor_part * close_weight
-                    assert self.contact_mode == "dist_tanh", "Not implemented"
-                    contact_vals_part[
-                        b : b + 1, zone_idxs
-                    ] = self.contact_thresh * torch.tanh(
-                        anchor_part / self.contact_thresh
-                    )
+                    if self.contact_mode == "dist_sq":
+                        contact_vals_part[
+                            b : b + 1, zone_idxs
+                        ] = anchor_part ** 2
+                    elif self.contact_mode == "dist":
+                        contact_vals_part[b : b + 1, zone_idxs] = anchor_part
+                    elif self.contact_mode == "dist_tanh":
+                        contact_vals_part[
+                            b : b + 1, zone_idxs
+                        ] = self.contact_thresh * torch.tanh(
+                            anchor_part / self.contact_thresh
+                        )
+                    else:
+                        raise ValueError(
+                            "contact_mode {} not in [dist_sq|dist|dist_tanh]".format(
+                                self.contact_mode
+                            )
+                        )
 
                     # plot contact
                     self.hand_part[b].append(hand_part[b])
@@ -196,23 +213,17 @@ class ContactLoss(Module):
 
         # l of repulsion loss (ObMan)
         if self.collision_mode == "dist_sq":
-            if self.contact_target == "all":
-                collision_vals = ((results_close - hand_verts_pt) ** 2).sum(2)
-            elif self.contact_target == "obj":
-                collision_vals = ((results_close - hand_verts_pt.detach()) ** 2).sum(2)
-            elif self.contact_target == "hand":
-                collision_vals = ((results_close.detach() - hand_verts_pt) ** 2).sum(2)
-            else:
-                raise ValueError(
-                    "contact_target {} not in [all|obj|hand]".format(
-                        self.contact_target
-                    )
-                )
+            collision_vals = anchor_dists ** 2
+            collision_o_vals = anchor_o_dist ** 2
         elif self.collision_mode == "dist":
             collision_vals = anchor_dists
+            collision_o_vals = anchor_o_dist
         elif self.collision_mode == "dist_tanh":
             collision_vals = self.collision_thresh * torch.tanh(
                 anchor_dists / self.collision_thresh
+            )
+            collision_o_vals = self.collision_thresh * torch.tanh(
+                anchor_o_dist / self.collision_thresh
             )
         else:
             raise ValueError(
@@ -221,24 +232,24 @@ class ContactLoss(Module):
             )
 
         # C and Ext(Obj) (ObMan)
-        missed_mask = below_dist & exterior
+        missed_mask = below_dist & exterior_hand
         if self.contact_zones == "tips":
             tip_idxs = [745, 317, 444, 556, 673]
             tips = torch.zeros_like(missed_mask)
             tips[:, tip_idxs] = 1
             missed_mask = missed_mask & tips
-        elif self.contact_zones in ["zones", "gen"]:
+        elif self.contact_zones == "zones":
+            # For each batch keep the closest point from the contact zone
             _, contact_zones = contact_utils.load_contacts("assets/contact_zones.pkl")
             contact_matching = torch.zeros_like(missed_mask)
             for _, zone_idxs in contact_zones.items():
                 min_zone_vals, min_zone_idxs = minho[:, zone_idxs].min(1)
                 cont_idxs = minoh.new(zone_idxs)[min_zone_idxs]
-                # For each batch keep the closest point from the contact zone
                 contact_matching[
                     [torch.range(0, len(cont_idxs) - 1).long(), cont_idxs.long()]
                 ] = 1
             missed_mask = missed_mask & contact_matching
-        elif self.contact_zones == "all":
+        elif self.contact_zones in ["gen", "all"]:
             missed_mask = missed_mask
         else:
             raise ValueError(
@@ -247,7 +258,10 @@ class ContactLoss(Module):
 
         # compute losses
         missed_loss = masked_mean_loss(contact_vals, missed_mask)  # attraction loss
-        penetr_loss = masked_mean_loss(collision_vals, penetr_mask)  # repulsion loss
+        penetr_loss = masked_mean_loss(collision_vals, penetr_h_mask)  # repulsion loss
+        penetr_loss += masked_mean_loss(
+            collision_o_vals, penetr_o_mask
+        )  # repulsion loss
         if self.contact_sym:
             obj2hand_dists = torch.sqrt(minoh)
             sym_below_dist = minoh < self.contact_thresh
@@ -256,12 +270,14 @@ class ContactLoss(Module):
 
         # contact_info, metrics
         max_penetr_depth = (
-            (anchor_dists.detach() * penetr_mask.float()).max(1)[0].mean()
+            (anchor_dists.detach() * penetr_h_mask.float()).max(1)[0].mean()
         )
-        mean_penetr_depth = (anchor_dists.detach() * penetr_mask.float()).mean(1).mean()
+        mean_penetr_depth = (
+            (anchor_dists.detach() * penetr_h_mask.float()).mean(1).mean()
+        )
         contact_info = {
             "attraction_masks": missed_mask,
-            "repulsion_masks": penetr_mask,
+            "repulsion_h_masks": penetr_h_mask,
             "contact_points": results_close,
             "min_dists": minho,
         }
@@ -279,16 +295,18 @@ class ContactLoss(Module):
         # penetration
         for b in range(batch_size):
             penetr_hand = self.penetr_hand[b]
-            if penetr_hand.shape[0] == 0:
+            penetr_obj = self.penetr_obj[b]
+            penetr = torch.cat([penetr_hand, penetr_obj], dim=0)
+            if penetr.shape[0] == 0:
                 logger.info(f"Batch {b} at step {step} has no penetration")
                 continue
-            penetr_hand = o3d.utility.Vector3dVector(penetr_hand.cpu().numpy())
-            penetr_hand = o3d.geometry.PointCloud(penetr_hand)
-            penetr_hand.paint_uniform_color([0, 0, 0])
+            penetr = o3d.utility.Vector3dVector(penetr.cpu().numpy())
+            penetr = o3d.geometry.PointCloud(penetr)
+            penetr.paint_uniform_color([0, 0, 0])
             save_path = os.path.join(
                 self.cfg.results_dir, f"batch_{b}_penetr_hand_{step}.ply"
             )
-            saved = o3d.io.write_point_cloud(save_path, penetr_hand)
+            saved = o3d.io.write_point_cloud(save_path, penetr)
             if saved:
                 logger.info(f"Saved {save_path}")
             else:
@@ -296,11 +314,11 @@ class ContactLoss(Module):
 
         # color map
         def generate_colors(n, saturation):
-            """ Generate n colors in HSV space and convert them to RGB. """
+            """Generate n colors in HSV space and convert them to RGB."""
             colors = []
             for i in range(n):
-                hue = i / n  
-                color = mcolors.hsv_to_rgb([hue, saturation, 1])  
+                hue = i / n
+                color = mcolors.hsv_to_rgb([hue, saturation, 1])
                 colors.append(color)
             return colors
 
@@ -323,10 +341,10 @@ class ContactLoss(Module):
             colors = []
             for i, hand_finger in enumerate(self.hand_part[b]):
                 coordinates.append(hand_finger.cpu().numpy())
-                colors.append(np.array([color_hand[i]]*hand_finger.shape[0]))
+                colors.append(np.array([color_hand[i]] * hand_finger.shape[0]))
             for i, obj_finger in enumerate(self.obj_part[b]):
                 coordinates.append(obj_finger.cpu().numpy())
-                colors.append(np.array([color_obj[i]]*obj_finger.shape[0]))
+                colors.append(np.array([color_obj[i]] * obj_finger.shape[0]))
             coordinates = np.concatenate(coordinates, axis=0)
             colors = np.concatenate(colors, axis=0)
 

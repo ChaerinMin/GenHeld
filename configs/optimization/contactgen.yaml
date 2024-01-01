@@ -1,5 +1,5 @@
 Niters: 2000
-lr: 0.01
+lr: 0.05
 
 plot:
   log_period: 100
@@ -13,7 +13,7 @@ loss:
 
 contactloss:
   contact_thresh: 5
-  contact_mode: "dist_tanh"
+  contact_mode: "dist"
   collision_thresh: 10
   collision_mode: "dist_tanh"
   contact_target: "obj"
