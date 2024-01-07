@@ -1,17 +1,15 @@
 import os
-import torch
+import logging
 from tqdm import tqdm
-from pytorch3d.io import save_obj
+import torch
+from torch.utils.data import DataLoader
+from pytorch3d.io import IO
 from pytorch3d.transforms import Transform3d
 from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_euler_angles
-from loss import contact_loss
-import matplotlib.pyplot as plt
 import matplotlib as mpl
-from torch.utils.data import DataLoader
-import logging
-from dataset import Data
-from hydra.utils import instantiate
+from dataset import Data, _P3DFaces
 from loss import ContactLoss
+from visualization import plot_pointcloud, merge_meshes
 
 mpl.rcParams["figure.dpi"] = 80
 logger = logging.getLogger(__name__)
@@ -25,22 +23,11 @@ def batch_normalize_mesh(verts):
     return verts, center, max_norm
 
 
-def plot_pointcloud(points, title=""):
-    x, y, z = points.clone().detach().cpu().squeeze().unbind(1)
-    fig = plt.figure(figsize=(5, 5))
-    ax = fig.add_subplot(111, projection="3d")
-    ax.scatter3D(x, z, -y)
-    ax.set_xlabel("x")
-    ax.set_ylabel("z")
-    ax.set_zlabel("y")
-    ax.set_title(title)
-    plt.show()
-
-
 class OptimizeObject:
     def __init__(self, cfg, dataset) -> None:
         self.cfg = cfg
         self.opt = cfg.optimization
+        self.dataset = dataset
         self.dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
         return
@@ -51,8 +38,10 @@ class OptimizeObject:
             data = data.to(device)
             hand_verts = data.hand_verts
             hand_faces = data.hand_faces
+            hand_aux = data.hand_aux
             object_verts = data.object_verts
             object_faces = data.object_faces
+            object_aux = data.object_aux
             sampled_verts = data.sampled_verts
             contact_object = data.contacts
             partition_object = data.partitions
@@ -72,6 +61,21 @@ class OptimizeObject:
                     f"batch {b}, [object] center: {object_center[b]}, max_norm: {object_max_norm[b]:.3f}"
                 )
             sampled_verts = (sampled_verts - object_center) / object_max_norm
+
+            # nimble to mano
+            hand_original_verts = hand_verts.clone()
+            hand_original_faces = hand_faces
+            if self.dataset.nimble:
+                logger.debug("Hand model: NIMBLE")
+                hand_verts, hand_faces_verts_idx = self.dataset.nimble_to_mano(
+                    hand_verts
+                )
+                hand_faces_verts_idx = hand_faces_verts_idx.unsqueeze(0).repeat(
+                    hand_verts.shape[0], 1, 1
+                )
+                hand_faces = _P3DFaces(verts_idx=hand_faces_verts_idx)
+            else:
+                logger.debug("Hand model: MANO")
 
             # parameters
             s_params = torch.ones(batch_size, requires_grad=True, device=device)
@@ -106,19 +110,53 @@ class OptimizeObject:
 
                 # save mesh
                 if i % self.opt.plot.mesh_period == 0:
-                    verts = torch.cat([hand_verts, new_object_verts], dim=1)
-                    faces = torch.cat(
-                        [hand_faces, object_faces + hand_verts.shape[1]], dim=1
+                    is_textured = self.dataset.nimble
+                    merged_meshes = merge_meshes(
+                        is_textured,
+                        hand_original_verts,
+                        hand_original_faces,
+                        hand_aux,
+                        new_object_verts.detach(),
+                        object_faces,
+                        object_aux,
                     )
+                    p3d_io = IO()
                     for b in range(batch_size):
                         out_obj_path = os.path.join(
                             self.cfg.results_dir,
                             "batch_{}_combined_{}.obj".format(b, i),
                         )
-                        save_obj(out_obj_path, verts[b], faces[b])
+                        p3d_io.save_mesh(
+                            merged_meshes[b], out_obj_path, include_textures=is_textured
+                        )
+                        logger.info(f"Saved {out_obj_path}")
+                
+                # render mesh 
+                if i % self.opt.plot.render_period == 0:
+                    if i % self.opt.plot.mesh_period != 0:
+                        is_textured = self.dataset.nimble
+                        merged_meshes = merge_meshes(
+                            is_textured,
+                            hand_original_verts,
+                            hand_original_faces,
+                            hand_aux,
+                            new_object_verts.detach(),
+                            object_faces,
+                            object_aux,
+                        )
+                    # support only one mesh
+                    if len(merged_meshes.verts_list) > 1:
+                        logger.error("Only support one mesh for rendering")
+                    merged_meshes.scale_verts_(hand_max_norm[0])
+                    merged_meshes.offset_verts_(hand_center[0])
 
                 # loss
-                attraction_loss, repulsion_loss, contact_info, metrics = self.contact_loss(
+                (
+                    attraction_loss,
+                    repulsion_loss,
+                    contact_info,
+                    metrics,
+                ) = self.contact_loss(
                     hand_verts,
                     hand_faces,
                     new_object_verts,
@@ -165,7 +203,7 @@ class OptimizeObject:
                     }
                 )
 
-                # save contact point cloud 
+                # save contact point cloud
                 if i % self.opt.plot.contact_period == 0:
                     self.contact_loss.plot_contact(step=i)
 

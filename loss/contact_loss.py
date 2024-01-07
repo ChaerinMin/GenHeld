@@ -1,11 +1,11 @@
-import torch
-from . import contact_utils
-from torch.nn import Module
-import open3d as o3d
 import os
 import logging
-import matplotlib.colors as mcolors
 import numpy as np
+import torch
+from torch.nn import Module
+import open3d as o3d
+import matplotlib.colors as mcolors
+from . import contact_utils
 
 logger = logging.getLogger(__name__)
 
@@ -85,14 +85,14 @@ class ContactLoss(Module):
         # exterior mask
         hand_triangles = []
         for b in range(batch_size):
-            hand_triangles.append(hand_verts_pt[b, hand_faces[b]])
+            hand_triangles.append(hand_verts_pt[b, hand_faces.verts_idx[b]])
         hand_triangles = torch.stack(hand_triangles, dim=0)
         exterior_obj = contact_utils.batch_mesh_contains_points(
             obj_verts_pt.detach(), hand_triangles.detach()
         )
         obj_triangles = []
         for b in range(batch_size):
-            obj_triangles.append(obj_verts_pt[b, obj_faces[b]])
+            obj_triangles.append(obj_verts_pt[b, obj_faces.verts_idx[b]])
         obj_triangles = torch.stack(obj_triangles, dim=0)
         exterior_hand = contact_utils.batch_mesh_contains_points(
             hand_verts_pt.detach(), obj_triangles.detach()
@@ -131,7 +131,7 @@ class ContactLoss(Module):
 
         # l of attraction loss (ObMan)
         if self.contact_mode == "dist_sq":
-            contact_vals = anchor_dists ** 2
+            contact_vals = anchor_dists**2
             below_dist = minho < (self.contact_thresh**2)
         elif self.contact_mode == "dist":
             contact_vals = anchor_dists
@@ -187,9 +187,7 @@ class ContactLoss(Module):
                     anchor_part = torch.norm(close_part - hand_part.detach(), 2, 2)
                     anchor_part = anchor_part * close_weight
                     if self.contact_mode == "dist_sq":
-                        contact_vals_part[
-                            b : b + 1, zone_idxs
-                        ] = anchor_part ** 2
+                        contact_vals_part[b : b + 1, zone_idxs] = anchor_part**2
                     elif self.contact_mode == "dist":
                         contact_vals_part[b : b + 1, zone_idxs] = anchor_part
                     elif self.contact_mode == "dist_tanh":
@@ -213,8 +211,8 @@ class ContactLoss(Module):
 
         # l of repulsion loss (ObMan)
         if self.collision_mode == "dist_sq":
-            collision_vals = anchor_dists ** 2
-            collision_o_vals = anchor_o_dist ** 2
+            collision_vals = anchor_dists**2
+            collision_o_vals = anchor_o_dist**2
         elif self.collision_mode == "dist":
             collision_vals = anchor_dists
             collision_o_vals = anchor_o_dist

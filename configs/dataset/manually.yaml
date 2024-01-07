@@ -2,11 +2,16 @@ _target_: dataset.datasets.ManualDataset
 
 opt:
   hand:
-    path: "/dev/hdd/hamer/demo_out/test2_1.obj"
+    # path: "/dev/hdd/hamer/demo_out/test2_1.obj"
+    path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000001_skin.obj"
+    mano_right: "/dev/hdd/manotorch/assets/mano/models/MANO_RIGHT.pkl"
+    nimble: True
+    nimble_pm_dict: "/dev/hdd/NIMBLE/assets/NIMBLE_DICT_9137.pkl"
+    nimble_mano_vreg: "/dev/hdd/NIMBLE/assets/NIMBLE_MANO_VREG.pkl"
   
   object:
-    path: "/dev/hdd/contactgen/exp/demo_results/toothpaste.ply"  
-    # path: "/dev/hdd/YCB/031_spoon/google_16k/textured.obj"
+    # path: "/dev/hdd/contactgen/exp/demo_results/toothpaste.ply"  
+    path: "/dev/hdd/YCB/031_spoon/google_16k/textured.obj"
     sampled_verts_path: "/dev/hdd/contactgen/exp/demo_results/obj_verts_7.npy"
     contacts_path: "/dev/hdd/contactgen/exp/demo_results/contacts_7.npy"
     partitions_path: "/dev/hdd/contactgen/exp/demo_results/partition_7.npy"

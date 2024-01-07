@@ -4,12 +4,13 @@ lr: 0.1
 plot:
   log_period: 100
   mesh_period: 100
+  render_period: 100
   pc_period: 1000000
   contact_period: 1000000
 
 loss:
-  attraction_weight: 0.1
-  repulsion_weight: 0.9
+  attraction_weight: 0.5
+  repulsion_weight: 0.5
 
 contactloss:
   contact_thresh: 5

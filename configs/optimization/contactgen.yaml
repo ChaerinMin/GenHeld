@@ -4,6 +4,7 @@ lr: 0.05
 plot:
   log_period: 100
   mesh_period: 100
+  render_period: 100
   pc_period: 1000000
   contact_period: 100
 

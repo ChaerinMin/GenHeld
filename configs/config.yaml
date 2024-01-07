@@ -1,11 +1,11 @@
 defaults:
   - dataset: manually
-  - optimization: contactgen
+  - optimization: obman
   - _self_
 
-debug: False
+debug: True
 
-results_dir: ???
+results_dir: ??? 
 
 hydra:
   job:
