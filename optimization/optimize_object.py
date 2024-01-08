@@ -1,6 +1,8 @@
 import os
 import logging
 from tqdm import tqdm
+from PIL import Image
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from pytorch3d.io import IO
@@ -9,7 +11,7 @@ from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_euler_angles
 import matplotlib as mpl
 from dataset import Data, _P3DFaces
 from loss import ContactLoss
-from visualization import plot_pointcloud, merge_meshes
+from visualization import Renderer, plot_pointcloud, merge_meshes
 
 mpl.rcParams["figure.dpi"] = 80
 logger = logging.getLogger(__name__)
@@ -24,21 +26,25 @@ def batch_normalize_mesh(verts):
 
 
 class OptimizeObject:
-    def __init__(self, cfg, dataset) -> None:
+    def __init__(self, cfg, device, writer, dataset) -> None:
         self.cfg = cfg
         self.opt = cfg.optimization
+        self.device = device
+        self.writer = writer
         self.dataset = dataset
         self.dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
+        self.renderer = Renderer(device)
         return
 
-    def optimize(self, device, writer):
+    def optimize(self):
         for data in self.dataloader:
             data = Data(**data)
-            data = data.to(device)
+            data = data.to(self.device)
             hand_verts = data.hand_verts
             hand_faces = data.hand_faces
             hand_aux = data.hand_aux
+            hand_intrinsics = data.hand_intrinsics
             object_verts = data.object_verts
             object_faces = data.object_faces
             object_aux = data.object_aux
@@ -78,9 +84,9 @@ class OptimizeObject:
                 logger.debug("Hand model: MANO")
 
             # parameters
-            s_params = torch.ones(batch_size, requires_grad=True, device=device)
-            t_params = torch.zeros(batch_size, 3, requires_grad=True, device=device)
-            R_params = torch.zeros(batch_size, 3, requires_grad=True, device=device)
+            s_params = torch.ones(batch_size, requires_grad=True, device=self.device)
+            t_params = torch.zeros(batch_size, 3, requires_grad=True, device=self.device)
+            R_params = torch.zeros(batch_size, 3, requires_grad=True, device=self.device)
 
             attraction_losses = []
             repulsion_losses = []
@@ -94,7 +100,7 @@ class OptimizeObject:
                 s_sigmoid = torch.sigmoid(s_params) * 3.0 - 1.5
                 R_matrix = axis_angle_to_matrix(R_params)
                 t = (
-                    Transform3d(device=device)
+                    Transform3d(device=self.device)
                     .scale(s_sigmoid)
                     .rotate(R_matrix)
                     .translate(t_params)
@@ -145,10 +151,18 @@ class OptimizeObject:
                             object_aux,
                         )
                     # support only one mesh
-                    if len(merged_meshes.verts_list) > 1:
+                    if len(merged_meshes.verts_list()) > 1:
                         logger.error("Only support one mesh for rendering")
-                    merged_meshes.scale_verts_(hand_max_norm[0])
-                    merged_meshes.offset_verts_(hand_center[0])
+                    merged_meshes.scale_verts_(hand_max_norm[0].item())
+                    merged_meshes.offset_verts_(hand_center[0,0])
+                    rendered_images = self.renderer(merged_meshes, hand_intrinsics)
+                    for b in range(batch_size):
+                        out_rendered_path = os.path.join(
+                            self.cfg.results_dir,
+                            "batch_{}_combined_{}_rendering.png".format(b, i),
+                        )
+                        Image.fromarray((rendered_images[b]*255).cpu().numpy().astype(np.uint8)).save(out_rendered_path)
+                        logger.info(f"Saved {out_rendered_path}")
 
                 # loss
                 (
@@ -187,7 +201,7 @@ class OptimizeObject:
                 if i % self.opt.plot.log_period == 0:
                     logger.info(description)
                 R_euler = matrix_to_euler_angles(R_matrix, "XYZ")
-                writer.log(
+                self.writer.log(
                     {
                         "loss": loss.item() / batch_size,
                         "attraction_loss": attraction_loss.item() / batch_size,

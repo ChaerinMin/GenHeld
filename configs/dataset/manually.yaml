@@ -3,7 +3,9 @@ _target_: dataset.datasets.ManualDataset
 opt:
   hand:
     # path: "/dev/hdd/hamer/demo_out/test2_1.obj"
-    path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000001_skin.obj"
+    # path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_original/obj/test/demo_eval_0560_0000001_skin.obj"
+    path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000006_skin.obj"
+    intrinsics: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000006_Ks.npy"
     mano_right: "/dev/hdd/manotorch/assets/mano/models/MANO_RIGHT.pkl"
     nimble: True
     nimble_pm_dict: "/dev/hdd/NIMBLE/assets/NIMBLE_DICT_9137.pkl"

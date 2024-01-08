@@ -46,8 +46,8 @@ def main(cfg):
 
     # main
     dataset = instantiate(cfg.dataset)
-    optimizer = OptimizeObject(cfg, dataset=dataset)
-    optimizer.optimize(device, writer)
+    optimizer = OptimizeObject(cfg, device, writer, dataset=dataset)
+    optimizer.optimize()
     return
 
 

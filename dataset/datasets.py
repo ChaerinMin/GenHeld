@@ -1,5 +1,6 @@
 import os
 import pickle
+from collections import namedtuple
 import logging
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -12,11 +13,18 @@ from submodules.NIMBLE_model.utils import vertices2landmarks
 
 logger = logging.getLogger(__name__)
 
+_P3DFaces = namedtuple(
+    "_P3DFaces",
+    ["verts_idx", "normals_idx", "textures_idx", "materials_idx"],
+    defaults=(None,) * 4,
+)  # Python 3.7+
+
 
 @dataclass
 class Data:
     hand_verts: Tensor
     hand_faces: NamedTuple
+    hand_intrinsics: Tensor
     object_verts: Tensor
     object_faces: NamedTuple
     hand_aux: NamedTuple = None
@@ -28,6 +36,40 @@ class Data:
     def to(self, device):
         self.hand_verts = self.hand_verts.to(device)
         self.object_verts = self.object_verts.to(device)
+
+        # to(device) of NamedTuple
+        hand_faces = {
+            field: getattr(self.hand_faces, field).to(device)
+            for field in self.hand_faces._fields
+        }
+        self.hand_faces = _P3DFaces(**hand_faces)
+        object_faces = {
+            field: getattr(self.object_faces, field).to(device)
+            for field in self.object_faces._fields
+        }
+        self.object_faces = _P3DFaces(**object_faces)
+
+        # to(device) of Dict
+        if self.hand_aux is not None:
+            hand_aux = {}
+            for k, v in self.hand_aux.items():
+                if isinstance(v, torch.Tensor):
+                    hand_aux[k] = v.to(device)
+                else:
+                    hand_aux[k] = v
+                    logger.debug(f"{k} hasn't been moved to device. Got {type(hand_aux[k])}")
+            self.hand_aux = hand_aux
+        if self.object_aux is not None:
+            object_aux = {}
+            for k, v in self.object_aux.items():
+                if isinstance(v, torch.Tensor):
+                    object_aux[k] = v.to(device)
+                else:
+                    object_aux[k] = v
+                    logger.debug(f"{k} hasn't been moved to device. Got {type(object_aux[k])}")
+            self.object_aux = object_aux
+
+        # to(device) of Optional
         if self.sampled_verts is not None:
             self.sampled_verts = self.sampled_verts.to(device)
         if self.contacts is not None:
@@ -110,6 +152,7 @@ class ManualDataset(BaseDataset):
             hand_aux = None
         else:
             raise ValueError(f"hand file extension {hand_ext} not supported")
+        hand_intrinsics = torch.from_numpy(np.load(self.hand.intrinsics))
 
         # object
         object_ext = os.path.splitext(self.object.path)[1]
@@ -133,6 +176,7 @@ class ManualDataset(BaseDataset):
         return_dict = dict(
             hand_verts=hand_verts,
             hand_faces=hand_faces,
+            hand_intrinsics=hand_intrinsics,
             object_verts=object_verts,
             object_faces=object_faces,
             sampled_verts=sampled_verts,
