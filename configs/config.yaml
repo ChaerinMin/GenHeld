@@ -1,6 +1,7 @@
 defaults:
   - dataset: manually
   - optimization: obman
+  - visualization: visualize
   - _self_
 
 debug: True

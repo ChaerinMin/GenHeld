@@ -286,7 +286,7 @@ class ContactLoss(Module):
 
         return missed_loss, penetr_loss, contact_info, metrics
 
-    def plot_contact(self, step):
+    def plot_contact(self, iter):
         batch_size = len(self.penetr_hand)
         num_parts = len(self.handpart_lookup)
 
@@ -296,13 +296,13 @@ class ContactLoss(Module):
             penetr_obj = self.penetr_obj[b]
             penetr = torch.cat([penetr_hand, penetr_obj], dim=0)
             if penetr.shape[0] == 0:
-                logger.info(f"Batch {b} at step {step} has no penetration")
+                logger.info(f"Batch {b} at iter {iter} has no penetration")
                 continue
             penetr = o3d.utility.Vector3dVector(penetr.cpu().numpy())
             penetr = o3d.geometry.PointCloud(penetr)
             penetr.paint_uniform_color([0, 0, 0])
             save_path = os.path.join(
-                self.cfg.results_dir, f"batch_{b}_penetr_hand_{step}.ply"
+                self.cfg.results_dir, f"batch_{b}_iter_{iter}_penetr_hand.ply"
             )
             saved = o3d.io.write_point_cloud(save_path, penetr)
             if saved:
@@ -330,7 +330,7 @@ class ContactLoss(Module):
         for b in range(batch_size):
             if len(self.hand_part[b]) == 0 or len(self.obj_part[b]) == 0:
                 logger.error(
-                    f"ContactGen was used, but batch {b} at step {step} has no ContactGen result"
+                    f"ContactGen was used, but batch {b} at iter {iter} has no ContactGen result"
                 )
                 continue
 
@@ -355,7 +355,7 @@ class ContactLoss(Module):
 
             # save
             save_path = os.path.join(
-                self.cfg.results_dir, f"batch_{b}_contact_{step}.ply"
+                self.cfg.results_dir, f"batch_{b}_iter_{iter}_contact.ply"
             )
             saved = o3d.io.write_point_cloud(save_path, contact_pc)
             if saved:

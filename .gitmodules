@@ -1,3 +1,6 @@
 [submodule "submodules/NIMBLE_model"]
 	path = submodules/NIMBLE_model
 	url = https://github.com/viridityzhu/NIMBLE_model.git
+[submodule "submodules/Inpaint_Anything"]
+	path = submodules/Inpaint_Anything
+	url = https://github.com/ChaerinMin/Inpaint-Anything.git

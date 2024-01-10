@@ -1,10 +1,13 @@
 import os
 import pickle
+from typing import Dict
 from collections import namedtuple
 import logging
 from dataclasses import dataclass
 from typing import NamedTuple
 import numpy as np
+import cv2
+from PIL import Image
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset
@@ -22,9 +25,13 @@ _P3DFaces = namedtuple(
 
 @dataclass
 class Data:
+    images: Tensor
+    intrinsics: Tensor
+    light: Dict[str, Tensor]
+    handarm_segs: Tensor
+    object_segs: Tensor
     hand_verts: Tensor
     hand_faces: NamedTuple
-    hand_intrinsics: Tensor
     object_verts: Tensor
     object_faces: NamedTuple
     hand_aux: NamedTuple = None
@@ -34,6 +41,8 @@ class Data:
     partitions: Tensor = None
 
     def to(self, device):
+        self.handarm_segs = self.handarm_segs.to(device)
+        self.object_segs = self.object_segs.to(device)
         self.hand_verts = self.hand_verts.to(device)
         self.object_verts = self.object_verts.to(device)
 
@@ -115,6 +124,7 @@ class BaseDataset(Dataset):
 class ManualDataset(BaseDataset):
     def __init__(self, opt) -> None:
         super().__init__()
+        self.image = opt.image
         self.hand = opt.hand
         self.object = opt.object
         self.nimble = opt.hand.nimble
@@ -138,6 +148,13 @@ class ManualDataset(BaseDataset):
         return 1
 
     def __getitem__(self, index):
+        # image
+        image = torch.from_numpy(cv2.cvtColor(cv2.imread(self.image.path), cv2.COLOR_BGR2RGB))
+        intrinsics = torch.from_numpy(np.load(self.image.intrinsics))
+        light = torch.load(self.image.light)
+        handarm_seg = torch.from_numpy(np.array(Image.open(self.image.handarm_seg)))
+        object_seg = torch.from_numpy(np.array(Image.open(self.image.object_seg)))
+        
         # hand
         hand_ext = os.path.splitext(self.hand.path)[1]
         if hand_ext == ".obj":
@@ -152,7 +169,6 @@ class ManualDataset(BaseDataset):
             hand_aux = None
         else:
             raise ValueError(f"hand file extension {hand_ext} not supported")
-        hand_intrinsics = torch.from_numpy(np.load(self.hand.intrinsics))
 
         # object
         object_ext = os.path.splitext(self.object.path)[1]
@@ -174,9 +190,13 @@ class ManualDataset(BaseDataset):
         partitions = torch.from_numpy(np.load(self.object.partitions_path))
 
         return_dict = dict(
+            images=image,
+            intrinsics=intrinsics,
+            light=light,
+            handarm_segs=handarm_seg,
+            object_segs=object_seg,
             hand_verts=hand_verts,
             hand_faces=hand_faces,
-            hand_intrinsics=hand_intrinsics,
             object_verts=object_verts,
             object_faces=object_faces,
             sampled_verts=sampled_verts,

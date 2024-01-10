@@ -4,6 +4,7 @@ from tqdm import tqdm
 from PIL import Image
 import numpy as np
 import torch
+from hydra.utils import instantiate
 from torch.utils.data import DataLoader
 from pytorch3d.io import IO
 from pytorch3d.transforms import Transform3d
@@ -11,7 +12,7 @@ from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_euler_angles
 import matplotlib as mpl
 from dataset import Data, _P3DFaces
 from loss import ContactLoss
-from visualization import Renderer, plot_pointcloud, merge_meshes
+from visualization import Renderer, plot_pointcloud, merge_meshes, blend_images
 
 mpl.rcParams["figure.dpi"] = 80
 logger = logging.getLogger(__name__)
@@ -33,18 +34,24 @@ class OptimizeObject:
         self.writer = writer
         self.dataset = dataset
         self.dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+        self.inpainter  = instantiate(cfg.visualization.inpaint)
+        self.inpainter.to(device)
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
-        self.renderer = Renderer(device)
         return
 
     def optimize(self):
         for data in self.dataloader:
             data = Data(**data)
             data = data.to(self.device)
+            images = data.images
+            images = images.numpy()
+            intrinsics = data.intrinsics
+            light = data.light
+            handarm_segs = data.handarm_segs
+            object_segs = data.object_segs
             hand_verts = data.hand_verts
             hand_faces = data.hand_faces
             hand_aux = data.hand_aux
-            hand_intrinsics = data.hand_intrinsics
             object_verts = data.object_verts
             object_faces = data.object_faces
             object_aux = data.object_aux
@@ -53,6 +60,12 @@ class OptimizeObject:
             partition_object = data.partitions
 
             batch_size = hand_verts.shape[0]
+            image_size = images.shape[1]
+            if image_size != images.shape[2]:
+                logger.error("Only support square image")
+
+            # inpaint
+            inpainted_images = self.inpainter(images, handarm_segs, object_segs)
 
             # normalize to center
             hand_verts, hand_center, hand_max_norm = batch_normalize_mesh(hand_verts)
@@ -85,18 +98,25 @@ class OptimizeObject:
 
             # parameters
             s_params = torch.ones(batch_size, requires_grad=True, device=self.device)
-            t_params = torch.zeros(batch_size, 3, requires_grad=True, device=self.device)
-            R_params = torch.zeros(batch_size, 3, requires_grad=True, device=self.device)
+            t_params = torch.zeros(
+                batch_size, 3, requires_grad=True, device=self.device
+            )
+            R_params = torch.zeros(
+                batch_size, 3, requires_grad=True, device=self.device
+            )
 
             attraction_losses = []
             repulsion_losses = []
             loop = tqdm(range(self.opt.Niters))
             optimizer = torch.optim.Adam([s_params, t_params, R_params], lr=self.opt.lr)
 
+            # Pytorch3D renderer
+            renderer = Renderer(self.device, image_size, intrinsics, light)
+
             for i in loop:
                 optimizer.zero_grad()
 
-                # transform the object mesh
+                # transform the object verts
                 s_sigmoid = torch.sigmoid(s_params) * 3.0 - 1.5
                 R_matrix = axis_angle_to_matrix(R_params)
                 t = (
@@ -130,14 +150,14 @@ class OptimizeObject:
                     for b in range(batch_size):
                         out_obj_path = os.path.join(
                             self.cfg.results_dir,
-                            "batch_{}_combined_{}.obj".format(b, i),
+                            "batch_{}_iter_{}.obj".format(b, i),
                         )
                         p3d_io.save_mesh(
                             merged_meshes[b], out_obj_path, include_textures=is_textured
                         )
                         logger.info(f"Saved {out_obj_path}")
-                
-                # render mesh 
+
+                # render hand
                 if i % self.opt.plot.render_period == 0:
                     if i % self.opt.plot.mesh_period != 0:
                         is_textured = self.dataset.nimble
@@ -150,19 +170,31 @@ class OptimizeObject:
                             object_faces,
                             object_aux,
                         )
-                    # support only one mesh
-                    if len(merged_meshes.verts_list()) > 1:
+
+                    if len(merged_meshes.verts_list()) > 1:  # support only one mesh
                         logger.error("Only support one mesh for rendering")
+                    
                     merged_meshes.scale_verts_(hand_max_norm[0].item())
-                    merged_meshes.offset_verts_(hand_center[0,0])
-                    rendered_images = self.renderer(merged_meshes, hand_intrinsics)
+                    merged_meshes.offset_verts_(hand_center[0, 0])
+                    rendered_images = renderer.render(merged_meshes)
+                    rendered_images = (rendered_images * 255).cpu().numpy().astype(np.uint8)
                     for b in range(batch_size):
+                        # save rendered hand
                         out_rendered_path = os.path.join(
                             self.cfg.results_dir,
-                            "batch_{}_combined_{}_rendering.png".format(b, i),
+                            "batch_{}_iter_{}_rendering.png".format(b, i),
                         )
-                        Image.fromarray((rendered_images[b]*255).cpu().numpy().astype(np.uint8)).save(out_rendered_path)
+                        Image.fromarray(rendered_images[b]).save(out_rendered_path)
                         logger.info(f"Saved {out_rendered_path}")
+
+                        # original image + rendered hand
+                        blended_image = blend_images(rendered_images[b], inpainted_images[b])
+                        out_blended_path = os.path.join(
+                            self.cfg.results_dir,
+                            "batch_{}_iter_{}_blended.png".format(b, i),
+                        )
+                        Image.fromarray(blended_image).save(out_blended_path)
+                        logger.info(f"Saved {out_blended_path}")
 
                 # loss
                 (
@@ -219,6 +251,6 @@ class OptimizeObject:
 
                 # save contact point cloud
                 if i % self.opt.plot.contact_period == 0:
-                    self.contact_loss.plot_contact(step=i)
+                    self.contact_loss.plot_contact(iter=i)
 
         return

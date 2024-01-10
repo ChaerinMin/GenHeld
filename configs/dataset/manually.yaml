@@ -1,11 +1,17 @@
 _target_: dataset.datasets.ManualDataset
 
 opt:
+  image: 
+    path: "/dev/hdd/FreiHAND/evaluation/rgb/00000030.jpg"
+    intrinsics: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_0000006_Ks.npy"
+    light: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000030_lightparams.pickle"
+    handarm_seg: "/dev/hdd/FreiHAND/evaluation/pred_twohands/00000030.png" 
+    object_seg: "/dev/hdd/FreiHAND/evaluation/pred_obj1/00000030.png"
+    
   hand:
     # path: "/dev/hdd/hamer/demo_out/test2_1.obj"
     # path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_original/obj/test/demo_eval_0560_0000001_skin.obj"
-    path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000006_skin.obj"
-    intrinsics: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000006_Ks.npy"
+    path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_0000006_skin.obj"
     mano_right: "/dev/hdd/manotorch/assets/mano/models/MANO_RIGHT.pkl"
     nimble: True
     nimble_pm_dict: "/dev/hdd/NIMBLE/assets/NIMBLE_DICT_9137.pkl"
