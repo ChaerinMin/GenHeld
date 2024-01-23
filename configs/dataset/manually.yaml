@@ -1,8 +1,9 @@
-_target_: dataset.datasets.ManualDataset
+_target_: dataset.manual_dataset.ManualDataset
 
 opt:
   image: 
     path: "/dev/hdd/FreiHAND/evaluation/rgb/00000030.jpg"
+    inpainted_path: "/dev/hdd/FreiHAND/evaluation/inpainted/00000030.jpg"
     intrinsics: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_0000006_Ks.npy"
     light: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000030_lightparams.pickle"
     handarm_seg: "/dev/hdd/FreiHAND/evaluation/pred_twohands/00000030.png" 
@@ -12,10 +13,18 @@ opt:
     # path: "/dev/hdd/hamer/demo_out/test2_1.obj"
     # path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_original/obj/test/demo_eval_0560_0000001_skin.obj"
     path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_0000006_skin.obj"
-    mano_right: "/dev/hdd/manotorch/assets/mano/models/MANO_RIGHT.pkl"
+    mano_pose: "/dev/hdd/HiFiHR/outputs/freihand/evaluation/obj/test/demo_eval_0560_0000030_full_pose.pickle"
+    xyz: "/dev/hdd/FreiHAND/evaluation_xyz.json"
+    mano_model: "/dev/hdd/manotorch/assets/mano/models/MANO_RIGHT.pkl"
     nimble: True
     nimble_pm_dict: "/dev/hdd/NIMBLE/assets/NIMBLE_DICT_9137.pkl"
     nimble_mano_vreg: "/dev/hdd/NIMBLE/assets/NIMBLE_MANO_VREG.pkl"
+    # mano_to_nimble: "assets/mano_to_nimble.npy"
+    # nimble_to_mano: "assets/nimble_to_mano.npy"
+    arm: True
+    smplx_model: "/dev/hdd/SMPLX/models/SMPLX_NEUTRAL.pkl"
+    smplx_arm_corr: "/dev/hdd/SMPLX/template/smplx_arm_corr.pkl"
+    # smplx_wrist_faces: "assets/smplx_wrist_faces.npy" 
   
   object:
     # path: "/dev/hdd/contactgen/exp/demo_results/toothpaste.ply"  

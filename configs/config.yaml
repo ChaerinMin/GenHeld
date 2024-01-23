@@ -1,7 +1,9 @@
 defaults:
-  - dataset: manually
+  # - dataset: manually
+  - dataset/hand@hand_dataset: freihand
+  - dataset/object@object_datsaet: ycb
   - optimization: obman
-  - visualization: visualize
+  - vis: visualize
   - _self_
 
 debug: True

@@ -10,12 +10,16 @@ from pytorch3d.io import IO
 from pytorch3d.transforms import Transform3d
 from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_euler_angles
 import matplotlib as mpl
-from dataset import Data, _P3DFaces
+from dataset import ManualData, _P3DFaces
+from modules import merge_meshes
 from loss import ContactLoss
-from visualization import Renderer, plot_pointcloud, merge_meshes, blend_images
+from visualization import Renderer, plot_pointcloud, blend_images
+from rich.console import Console
+
 
 mpl.rcParams["figure.dpi"] = 80
 logger = logging.getLogger(__name__)
+console = Console()
 
 
 def batch_normalize_mesh(verts):
@@ -34,17 +38,17 @@ class OptimizeObject:
         self.writer = writer
         self.dataset = dataset
         self.dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-        self.inpainter  = instantiate(cfg.visualization.inpaint)
+        self.inpainter = instantiate(cfg.vis.inpaint)
         self.inpainter.to(device)
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
         return
 
     def optimize(self):
         for data in self.dataloader:
-            data = Data(**data)
+            data = ManualData(**data)
             data = data.to(self.device)
-            images = data.images
-            images = images.numpy()
+            images = data.images.numpy()
+            inpainted_images = data.inpainted_images
             intrinsics = data.intrinsics
             light = data.light
             handarm_segs = data.handarm_segs
@@ -52,6 +56,7 @@ class OptimizeObject:
             hand_verts = data.hand_verts
             hand_faces = data.hand_faces
             hand_aux = data.hand_aux
+            mano_pose = data.mano_pose
             object_verts = data.object_verts
             object_faces = data.object_faces
             object_aux = data.object_aux
@@ -65,9 +70,23 @@ class OptimizeObject:
                 logger.error("Only support square image")
 
             # inpaint
-            inpainted_images = self.inpainter(images, handarm_segs, object_segs)
+            if inpainted_images is None:
+                with console.status(
+                    "Removing and inpainting the hand...", spinner="monkey"
+                ):
+                    inpainted_images = self.inpainter(images, handarm_segs, object_segs)
+                    inpainted_path = self.dataset.image.inpainted_path
+                    inapinted_dir = os.path.dirname(inpainted_path)
+                    os.makedirs(inapinted_dir, exist_ok=True)
+                    for b in range(batch_size):
+                        Image.fromarray(inpainted_images[b]).save(inpainted_path)
+                        logger.info(f"Saved {inpainted_path}")
+            else:
+                inpainted_images = inpainted_images.numpy()
 
             # normalize to center
+            hand_original_verts = hand_verts.clone()
+            hand_original_faces = hand_faces
             hand_verts, hand_center, hand_max_norm = batch_normalize_mesh(hand_verts)
             object_verts, object_center, object_max_norm = batch_normalize_mesh(
                 object_verts
@@ -82,8 +101,6 @@ class OptimizeObject:
             sampled_verts = (sampled_verts - object_center) / object_max_norm
 
             # nimble to mano
-            hand_original_verts = hand_verts.clone()
-            hand_original_faces = hand_faces
             if self.dataset.nimble:
                 logger.debug("Hand model: NIMBLE")
                 hand_verts, hand_faces_verts_idx = self.dataset.nimble_to_mano(
@@ -95,6 +112,19 @@ class OptimizeObject:
                 hand_faces = _P3DFaces(verts_idx=hand_faces_verts_idx)
             else:
                 logger.debug("Hand model: MANO")
+
+            # nimble to nimblearm
+            if self.dataset.arm:
+                if self.dataset.nimble:
+                    logger.debug("With arm.")
+                    (
+                        hand_original_verts,
+                        hand_original_faces,
+                    ) = self.dataset.nimble_to_nimblearm(
+                        mano_pose, hand_original_verts, hand_original_faces
+                    )
+                else:
+                    logger.error("With arm, mano is not implemented. Use nimble.")
 
             # parameters
             s_params = torch.ones(batch_size, requires_grad=True, device=self.device)
@@ -111,7 +141,13 @@ class OptimizeObject:
             optimizer = torch.optim.Adam([s_params, t_params, R_params], lr=self.opt.lr)
 
             # Pytorch3D renderer
-            renderer = Renderer(self.device, image_size, intrinsics, light)
+            renderer = Renderer(
+                self.device,
+                image_size,
+                intrinsics,
+                light,
+                self.cfg.vis.render.use_predicted_light,
+            )
 
             for i in loop:
                 optimizer.zero_grad()
@@ -137,12 +173,14 @@ class OptimizeObject:
                 # save mesh
                 if i % self.opt.plot.mesh_period == 0:
                     is_textured = self.dataset.nimble
+                    object_aligned_verts = new_object_verts.detach()
+                    object_aligned_verts = (object_aligned_verts * hand_max_norm) + hand_center
                     merged_meshes = merge_meshes(
                         is_textured,
                         hand_original_verts,
                         hand_original_faces,
                         hand_aux,
-                        new_object_verts.detach(),
+                        object_aligned_verts,
                         object_faces,
                         object_aux,
                     )
@@ -161,23 +199,26 @@ class OptimizeObject:
                 if i % self.opt.plot.render_period == 0:
                     if i % self.opt.plot.mesh_period != 0:
                         is_textured = self.dataset.nimble
+                        object_aligned_verts = new_object_verts.detach()
+                        object_aligned_verts = (object_aligned_verts * hand_max_norm) + hand_center
                         merged_meshes = merge_meshes(
                             is_textured,
                             hand_original_verts,
                             hand_original_faces,
                             hand_aux,
-                            new_object_verts.detach(),
+                            object_aligned_verts,
                             object_faces,
                             object_aux,
                         )
 
                     if len(merged_meshes.verts_list()) > 1:  # support only one mesh
                         logger.error("Only support one mesh for rendering")
-                    
-                    merged_meshes.scale_verts_(hand_max_norm[0].item())
-                    merged_meshes.offset_verts_(hand_center[0, 0])
+
+                    merged_meshes.verts_normals_packed()
                     rendered_images = renderer.render(merged_meshes)
-                    rendered_images = (rendered_images * 255).cpu().numpy().astype(np.uint8)
+                    rendered_images = (
+                        (rendered_images * 255).cpu().numpy().astype(np.uint8)
+                    )
                     for b in range(batch_size):
                         # save rendered hand
                         out_rendered_path = os.path.join(
@@ -188,7 +229,11 @@ class OptimizeObject:
                         logger.info(f"Saved {out_rendered_path}")
 
                         # original image + rendered hand
-                        blended_image = blend_images(rendered_images[b], inpainted_images[b])
+                        blended_image = blend_images(
+                            rendered_images[b],
+                            inpainted_images[b],
+                            blend_type=self.cfg.vis.blend_type,
+                        )
                         out_blended_path = os.path.join(
                             self.cfg.results_dir,
                             "batch_{}_iter_{}_blended.png".format(b, i),
