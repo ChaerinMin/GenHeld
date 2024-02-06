@@ -1,0 +1,22 @@
+_target_: dataset.hand_dataset.FreiHANDDataset
+
+opt:
+  image: 
+    path: "/dev/hdd/FreiHAND/evaluation/rgb/%08d.jpg"
+    inpainted_path: "/dev/hdd/FreiHAND/evaluation/inpainted/%08d.jpg"
+    intrinsics: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_%07d_Ks.npy"
+    light: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_%07d_lightparams.pickle"
+    handarm_seg: "/dev/hdd/FreiHAND/evaluation/pred_twohands/%08d.png" 
+    object_seg: "/dev/hdd/FreiHAND/evaluation/pred_obj1/%08d.png"
+
+  hand: 
+    path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_%07d_skin.obj"
+    mano_pose: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_%07d_full_pose.pickle"
+    xyz: "/dev/hdd/FreiHAND/evaluation_xyz.json"
+    mano_model: "/dev/hdd/manotorch/assets/mano/models/MANO_RIGHT.pkl"
+    nimble: True
+    nimble_pm_dict: "/dev/hdd/NIMBLE/assets/NIMBLE_DICT_9137.pkl"
+    nimble_mano_vreg: "/dev/hdd/NIMBLE/assets/NIMBLE_MANO_VREG.pkl"
+    arm: True
+    smplx_model: "/dev/hdd/SMPLX/models/SMPLX_NEUTRAL.pkl"
+    smplx_arm_corr: "/dev/hdd/SMPLX/template/smplx_arm_corr.pkl"

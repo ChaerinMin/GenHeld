@@ -1,18 +1,19 @@
-import numpy as np
+import logging
+
 import cv2
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
 from pytorch3d.renderer import (
-    RasterizationSettings,
-    MeshRenderer,
-    MeshRasterizer,
     HardPhongShader,
     Materials,
+    MeshRasterizer,
+    MeshRenderer,
+    RasterizationSettings,
 )
 from pytorch3d.renderer.cameras import PerspectiveCameras
-from pytorch3d.renderer.lighting import PointLights, DirectionalLights
-import matplotlib.pyplot as plt
-import logging
+from pytorch3d.renderer.lighting import DirectionalLights, PointLights
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,8 @@ def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blend
 
 class Renderer:
     def __init__(
-        self, device, image_size, intrinsics, predicted_light, use_predicted_light=False
+        self, image_size, intrinsics, predicted_light, use_predicted_light=False
     ):
-        self.device = device
         self.aa_factor = 3
         raster_settings_soft = RasterizationSettings(
             image_size=image_size * self.aa_factor,
@@ -75,26 +75,22 @@ class Renderer:
             diffuse_color=((0.8, 0.8, 0.8),),
             specular_color=((0.2, 0.2, 0.2),),
             shininess=30,
-            device=device,
         )
 
         if use_predicted_light:
             self.lighting = DirectionalLights(
-                direction=predicted_light["directions"], device=device
+                direction=predicted_light["directions"]
             )  # diffuse_color=predicted_light['colors'],
         else:
-            self.lighting = PointLights(device=device)
+            self.lighting = PointLights()
 
         fxfy, cxcy = Renderer.ndc_fxfy_cxcy(intrinsics, image_size)
-        self.cameras = PerspectiveCameras(
-            focal_length=-fxfy, principal_point=cxcy, device=self.device
-        )
+        self.cameras = PerspectiveCameras(focal_length=-fxfy, principal_point=cxcy)
 
         self.renderer_p3d = MeshRenderer(
             rasterizer=MeshRasterizer(raster_settings=raster_settings_soft),
             shader=HardPhongShader(
                 materials=materials,
-                device=device,
             ),
         )
         return
