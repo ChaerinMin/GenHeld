@@ -6,6 +6,7 @@ import random
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import Dict, NamedTuple
+import json
 
 import cv2
 import numpy as np
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class HandData:
+    fidxs: int
     images: Tensor
     intrinsics: Tensor
     light: Dict[str, Tensor]
@@ -39,7 +41,7 @@ class HandData:
     object_segs: Tensor
     hand_verts: Tensor
     hand_faces: NamedTuple
-    mano_pose: Tensor = None
+    xyz: Tensor = None
     inpainted_images: Tensor = None
     hand_aux: NamedTuple = None
 
@@ -47,6 +49,7 @@ class HandData:
         self.handarm_segs = self.handarm_segs.to(device)
         self.object_segs = self.object_segs.to(device)
         self.hand_verts = self.hand_verts.to(device)
+        self.xyz = self.xyz.to(device)
 
         # to(device) of NamedTuple
         hand_faces = {
@@ -71,6 +74,7 @@ class HandData:
 
 @dataclass
 class ObjectData:
+    fidx: str
     object_verts: Tensor
     object_faces: NamedTuple
     object_aux: NamedTuple = None
@@ -113,6 +117,9 @@ class ObjectData:
 
 class HandDataset(Dataset):
     def __init__(self, opt) -> None:
+        self.image = opt.image
+        self.hand = opt.hand
+
         if torch.cuda.is_available():
             device = torch.device("cuda:0")
         else:
@@ -296,7 +303,7 @@ class HandDataset(Dataset):
         nimble_mano_f = self.mano_f
         return nimble_mano_v, nimble_mano_f
 
-    def nimble_to_nimblearm(self, pose, h_verts, h_faces):
+    def nimble_to_nimblearm(self, xyz, h_verts, h_faces):
         """
         h_verts: torch.tensor B x V x 3
         """
@@ -311,25 +318,20 @@ class HandDataset(Dataset):
         smplx_middle1_loc = self.smplx_joints[self.smplx_joint_idx["R_Middle1"]][
             None, :
         ]
-        # hand_joints = torch.bmm(self.nimble_jreg_mano.unsqueeze(0), h_verts)
-        # hand_wrist_loc = hand_joints[:, 0]
-        # hand_middle1_loc = hand_joints[:, 9]
-        hand_wrist_loc = torch.tensor(self.xyz[0]).unsqueeze(0).to(h_verts.device)
-        hand_middle1_loc = torch.tensor(self.xyz[9]).unsqueeze(0).to(h_verts.device)
+        hand_wrist_loc = xyz[:, 0]
+        hand_middle1_loc = xyz[:, 9]
         smplx_rot = smplx_middle1_loc - smplx_wrist_loc
         smplx_rot = smplx_rot / smplx_rot.norm(dim=1, keepdim=True)
         hand_rot = hand_middle1_loc - hand_wrist_loc
         hand_rot = hand_rot / hand_rot.norm(dim=1, keepdim=True)
-        rel_rot_axis = torch.cross(hand_rot, smplx_rot, dim=1)
+        rel_rot_axis = torch.cross(hand_rot.to(smplx_rot.device), smplx_rot, dim=1)
         rel_rot_angle = torch.acos(torch.sum(hand_rot * smplx_rot, dim=1, keepdim=True))
         rel_rot = rel_rot_axis * rel_rot_angle
-        # root_rot = pose[:, 0].to(h_verts.device)
         root_rot = axis_angle_to_matrix(rel_rot)
         t = Transform3d(device=mano_a_verts.device).rotate(root_rot)
         mano_a_verts = t.transform_points(
             mano_a_verts - smplx_wrist_loc.unsqueeze(1)
         ) + hand_wrist_loc.unsqueeze(1)
-        # + self.root_xyz[None, None, :].to(mano_a_verts.device)
 
         # verts, faces
         nimble_ha_verts = torch.cat([h_verts, mano_a_verts], dim=1)
@@ -357,9 +359,9 @@ class HandDataset(Dataset):
 
         # image
         image = torch.from_numpy(
-            cv2.cvtColor(cv2.imread(self.image.paths % fidx), cv2.COLOR_BGR2RGB)
+            cv2.cvtColor(cv2.imread(self.image.path % fidx), cv2.COLOR_BGR2RGB)
         )
-        if os.path.exists(self.inpainted_paths % fidx):
+        if os.path.exists(self.image.inpainted_path % fidx):
             inpainted_image = torch.from_numpy(
                 cv2.cvtColor(
                     cv2.imread(self.image.inpainted_path % fidx), cv2.COLOR_BGR2RGB
@@ -390,9 +392,12 @@ class HandDataset(Dataset):
             hand_aux = None
         else:
             raise ValueError(f"hand file extension {hand_ext} not supported")
-        mano_pose = torch.load(self.hand.mano_pose % fidx)
+        with open(self.hand.xyz, "r") as f:
+            xyz = json.load(f)[fidx]
+        xyz = torch.tensor(xyz)
 
         return_dict = dict(
+            fidxs=fidx,
             images=image,
             object_segs=object_seg,
             intrinsics=intrinsics,
@@ -400,7 +405,7 @@ class HandDataset(Dataset):
             handarm_segs=handarm_seg,
             hand_verts=hand_verts,
             hand_faces=hand_faces,
-            mano_pose=mano_pose,
+            xyz=xyz
         )
 
         # add only if not None
@@ -415,6 +420,7 @@ class HandDataset(Dataset):
 
 class ObjectDataset(Dataset):
     def __init__(self, opt) -> None:
+        self.object = opt
         return
 
     def __len__(self):
@@ -437,6 +443,19 @@ class ObjectDataset(Dataset):
         else:
             raise ValueError(f"object file extension {object_ext} not supported")
 
+        return_dict = dict(
+            fidx=fidx,
+            object_verts=object_verts,
+            object_faces=object_faces
+        )
+
+        # add only if not None
+        if object_aux is not None:
+            object_aux = {
+                k: v for k, v in object_aux._asdict().items() if v is not None
+            }
+            return_dict["object_aux"] = object_aux
+
         # ContactGen
         if self.object.sampled_verts_path:
             contactgen_fidxs = sorted(
@@ -455,24 +474,8 @@ class ObjectDataset(Dataset):
             partitions = torch.from_numpy(
                 np.load(self.object.partitions_path % (fidx, contactgen_fidx))
             )
-        else:
-            sampled_verts = None
-            contacts = None
-            partitions = None
-
-        return_dict = dict(
-            object_verts=object_verts,
-            object_faces=object_faces,
-            sampled_verts=sampled_verts,
-            contacts=contacts,
-            partitions=partitions,
-        )
-
-        # add only if not None
-        if object_aux is not None:
-            object_aux = {
-                k: v for k, v in object_aux._asdict().items() if v is not None
-            }
-            return_dict["object_aux"] = object_aux
+            return_dict["sampled_verts"] = sampled_verts
+            return_dict["contacts"] = contacts
+            return_dict["partitions"] = partitions
 
         return return_dict

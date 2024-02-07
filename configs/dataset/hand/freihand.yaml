@@ -11,7 +11,6 @@ opt:
 
   hand: 
     path: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_%07d_skin.obj"
-    mano_pose: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_%07d_full_pose.pickle"
     xyz: "/dev/hdd/FreiHAND/evaluation_xyz.json"
     mano_model: "/dev/hdd/manotorch/assets/mano/models/MANO_RIGHT.pkl"
     nimble: True

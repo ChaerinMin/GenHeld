@@ -1,2 +1,1 @@
 from .reconstruct_hand import ReconstructHand
-from .optimize_object import OptimizeObject

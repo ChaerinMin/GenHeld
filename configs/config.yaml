@@ -1,13 +1,13 @@
 defaults:
   - dataset/hand@hand_dataset: freihand
-  - dataset/object@object_datsaet: ycb
-  - module/optimize_oibject@optimize_object: obman
+  - dataset/object@object_dataset: ycb
+  - module/optimize_object@optimize_object: obman
   - module/reconstruct_hand@reconstruct_hand: hifihr
   - vis: visualize
   - _self_
 
 debug: True
-devices: 0
+devices: [0]
 
 results_dir: ??? 
 

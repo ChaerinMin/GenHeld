@@ -1,8 +1,10 @@
+from dataclasses import dataclass
 import logging
 import os
 from typing import Any, NamedTuple
 
 import numpy as np
+import torch
 import pytorch_lightning as pl
 from hydra.utils import instantiate
 from PIL import Image
@@ -14,7 +16,7 @@ from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import WandbLogger
 
 from dataset import HandData, _P3DFaces
-from module import OptimizeObject
+from module.optimize_object import OptimizeObject
 from visualization import Renderer
 
 logger = logging.getLogger(__name__)
@@ -23,22 +25,30 @@ console = Console()
 
 class ReconstructHand(LightningModule):
     def __init__(self, cfg, accelerator, object_optimization=None):
+        super().__init__()
         self.cfg = cfg
         self.object_optimization = object_optimization
         self.accelerator = accelerator
         self.hand_dataset = instantiate(cfg.hand_dataset)
         self.dataloader = DataLoader(
-            self.hand_dataset, batch_size=cfg.obtimize_object.hand_batch, shuffle=False
+            self.hand_dataset,
+            batch_size=cfg.optimize_object.hand_batch,
+            shuffle=False,
         )
         self.inpainter = instantiate(cfg.vis.inpaint)
         return
 
-    def predict_dataloader(self):
+    def train_dataloader(self):
         return self.dataloader
 
-    def predict_step(self, batch):
+    def configure_optimizers(self):
+        dummy = torch.tensor([1.0])
+        return torch.optim.Adam([dummy], lr=1.0)
+
+    def training_step(self, batch):
         data = HandData(**batch)
-        images = data.images.numpy()
+        fidxs = data.fidxs
+        images = data.images.cpu().numpy()
         inpainted_images = data.inpainted_images
         handarm_segs = data.handarm_segs
         object_segs = data.object_segs
@@ -47,7 +57,7 @@ class ReconstructHand(LightningModule):
         hand_verts = data.hand_verts
         hand_faces = data.hand_faces
         hand_aux = data.hand_aux
-        mano_pose = data.mano_pose
+        xyz = data.xyz
 
         batch_size = hand_verts.shape[0]
         image_size = images.shape[1]
@@ -60,14 +70,14 @@ class ReconstructHand(LightningModule):
                 "Removing and inpainting the hand...", spinner="monkey"
             ):
                 inpainted_images = self.inpainter(images, handarm_segs, object_segs)
-                inpainted_path = self.hand_dataset.image.inpainted_path
-                inapinted_dir = os.path.dirname(inpainted_path)
+                inapinted_dir = os.path.dirname(self.hand_dataset.image.inpainted_path)
                 os.makedirs(inapinted_dir, exist_ok=True)
                 for b in range(batch_size):
+                    inpainted_path = self.hand_dataset.image.inpainted_path % fidxs[b]
                     Image.fromarray(inpainted_images[b]).save(inpainted_path)
                     logger.info(f"Saved {inpainted_path}")
         else:
-            inpainted_images = inpainted_images.numpy()
+            inpainted_images = inpainted_images.cpu().numpy()
 
         # normalize to center
         hand_original_verts = hand_verts.clone()
@@ -101,13 +111,14 @@ class ReconstructHand(LightningModule):
                     hand_original_verts,
                     hand_original_faces,
                 ) = self.hand_dataset.nimble_to_nimblearm(
-                    mano_pose, hand_original_verts, hand_original_faces
+                    xyz, hand_original_verts, hand_original_faces
                 )
             else:
                 logger.error("With arm, mano is not implemented. Use nimble.")
 
         # Pytorch3D renderer
         renderer = Renderer(
+            self.device,
             image_size,
             intrinsics,
             light,
@@ -117,6 +128,8 @@ class ReconstructHand(LightningModule):
         # give data
         handresult = HandResult(
             batch_size=hand_verts.shape[0],
+            fidxs=fidxs,
+            dataset=self.hand_dataset,
             verts=hand_verts,
             faces=hand_faces,
             aux=hand_aux,
@@ -131,21 +144,27 @@ class ReconstructHand(LightningModule):
         # optimize
         object_optimization = OptimizeObject(self.cfg, handresult)
         callbacks = [LearningRateMonitor(logging_interval="step")]
-        loggers = [WandbLogger(proejct="optimize_object", offline=self.cfg.debug)]
+        loggers = [WandbLogger(project="optimize_object", offline=self.cfg.debug)]
         trainer = pl.Trainer(
-            deterministic=True,
             devices=self.cfg.devices,
             accelerator=self.accelerator,
             callbacks=callbacks,
-            loggers=loggers,
+            logger=loggers,
+            max_epochs=1,
+            enable_checkpointing=False,
         )
+        logger.info(f"Max global steps for object optimization: {trainer.max_steps}")
+        logger.info(f"Max epochs for object optimization: {trainer.max_epochs}")
         trainer.fit(object_optimization)
 
         return
 
 
+@dataclass
 class HandResult:
     batch_size: int
+    fidxs: Tensor
+    dataset: Any
     verts: Tensor
     faces: NamedTuple
     aux: NamedTuple

@@ -63,8 +63,9 @@ def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blend
 
 class Renderer:
     def __init__(
-        self, image_size, intrinsics, predicted_light, use_predicted_light=False
+        self, device, image_size, intrinsics, predicted_light, use_predicted_light=False
     ):
+        self.device = device
         self.aa_factor = 3
         raster_settings_soft = RasterizationSettings(
             image_size=image_size * self.aa_factor,
@@ -75,22 +76,24 @@ class Renderer:
             diffuse_color=((0.8, 0.8, 0.8),),
             specular_color=((0.2, 0.2, 0.2),),
             shininess=30,
+            device=self.device,
         )
 
         if use_predicted_light:
             self.lighting = DirectionalLights(
-                direction=predicted_light["directions"]
+                direction=predicted_light["directions"], device=self.device,
             )  # diffuse_color=predicted_light['colors'],
         else:
-            self.lighting = PointLights()
+            self.lighting = PointLights(device=self.device)
 
         fxfy, cxcy = Renderer.ndc_fxfy_cxcy(intrinsics, image_size)
-        self.cameras = PerspectiveCameras(focal_length=-fxfy, principal_point=cxcy)
+        self.cameras = PerspectiveCameras(focal_length=-fxfy, principal_point=cxcy, device=self.device)
 
         self.renderer_p3d = MeshRenderer(
             rasterizer=MeshRasterizer(raster_settings=raster_settings_soft),
             shader=HardPhongShader(
                 materials=materials,
+                device=self.device,
             ),
         )
         return

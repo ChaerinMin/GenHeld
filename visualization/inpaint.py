@@ -69,10 +69,9 @@ class Inpainter:
         masks, _, _ = predict_masks_with_sam(
             image,
             point,
-            torch.tensor([1], dtype=torch.int, device=self.device),
+            torch.tensor([1], dtype=torch.int),
             model_type=self.opt.sam.model_type,
             ckpt_p=self.opt.sam.ckpt,
-            device=self.device,
         )
         masks = masks.to(torch.uint8) * 255
         mask = masks[0, self.opt.sam.mask_idx]  # does not support batch size > 1
@@ -84,7 +83,6 @@ class Inpainter:
             mask,
             self.opt.lama.config_file,
             self.opt.lama.ckpt,
-            device=self.device,
         )
         return img_inpainted
 

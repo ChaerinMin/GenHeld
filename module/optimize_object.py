@@ -1,6 +1,5 @@
 import logging
 import os
-import random
 
 import matplotlib as mpl
 import numpy as np
@@ -27,33 +26,28 @@ logger = logging.getLogger(__name__)
 
 class OptimizeObject(LightningModule):
     def __init__(self, cfg, handresult):
+        super().__init__()
         self.cfg = cfg
         self.opt = cfg.optimize_object
         self.handresult = handresult
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
-        self.object_dataset = instantiate(self.cfg.object_dataset)
-
-        # parameters
-        self.s_params = torch.ones(self.handresult.batch_size, requires_grad=True)
-        self.t_params = torch.zeros(self.handresult.batch_size, 3, requires_grad=True)
-        self.R_params = torch.zeros(self.handresult.batch_size, 3, requires_grad=True)
-
-        self.optimizer = torch.optim.Adam(
-            [self.s_params, self.t_params, self.R_params], lr=self.opt.lr
+        object_dataset = instantiate(self.cfg.object_dataset)
+        self.object_dataloader = DataLoader(
+            object_dataset, batch_size=1, shuffle=True
         )
-
         return
 
     def on_train_start(self):
         # randomly select one object
-        idx = random.randint(0, len(self.object_dataset) - 1)
-        data = self.object_dataset[idx]
-
-        data = ObjectData(**data)
+        for data in self.object_dataloader:
+            data = ObjectData(**data)
+            break
+        data = data.to(self.device)
+        self.object_fidx = data.fidx
         object_verts = data.object_verts
         self.object_faces = data.object_faces
         self.object_aux = data.object_aux
-        sampled_verts = data.sampled_verts
+        self.sampled_verts = data.sampled_verts
         self.contact_object = data.contacts
         self.partition_object = data.partitions
 
@@ -65,7 +59,8 @@ class OptimizeObject(LightningModule):
             logger.debug(
                 f"batch {b}, [object] center: {object_center[b]}, max_norm: {object_max_norm[b]:.3f}"
             )
-        self.sampled_verts = (sampled_verts - object_center) / object_max_norm
+        if self.sampled_verts is not None:
+            self.sampled_verts = (self.sampled_verts - object_center) / object_max_norm
 
         return
 
@@ -76,15 +71,38 @@ class OptimizeObject(LightningModule):
         return loop
 
     def configure_optimizers(self):
-        return self.optimizer
+        # parameters
+        self.s_params = torch.ones(
+            self.handresult.batch_size, requires_grad=True, device=self.device
+        )
+        self.t_params = torch.zeros(
+            self.handresult.batch_size, 3, requires_grad=True, device=self.device
+        )
+        self.R_params = torch.zeros(
+            self.handresult.batch_size, 3, requires_grad=True, device=self.device
+        )
 
-    def trainig_step(self, batch, batch_idx):
+        optimizer = torch.optim.Adam(
+            [self.s_params, self.t_params, self.R_params], lr=self.opt.lr
+        )
+
+        return optimizer
+
+    def training_step(self, batch, batch_idx):
         # transform the object verts
         s_sigmoid = torch.sigmoid(self.s_params) * 3.0 - 1.5
         R_matrix = axis_angle_to_matrix(self.R_params)
-        t = Transform3d().scale(s_sigmoid).rotate(R_matrix).translate(self.t_params)
+        t = (
+            Transform3d(device=self.device)
+            .scale(s_sigmoid)
+            .rotate(R_matrix)
+            .translate(self.t_params)
+        )
         new_object_verts = t.transform_points(self.object_verts)
-        new_sampled_verts = t.transform_points(self.sampled_verts)
+        if self.sampled_verts is not None:
+            new_sampled_verts = t.transform_points(self.sampled_verts)
+        else:
+            new_sampled_verts = None
 
         # loss
         (
@@ -94,7 +112,7 @@ class OptimizeObject(LightningModule):
             metrics,
         ) = self.contact_loss(
             self.handresult.verts,
-            self.self.handresult.faces,
+            self.handresult.faces,
             new_object_verts,
             self.object_faces,
             sampled_verts=new_sampled_verts,
@@ -105,17 +123,6 @@ class OptimizeObject(LightningModule):
             self.opt.loss.attraction_weight * attraction_loss
             + self.opt.loss.repulsion_weight * repulsion_loss
         )
-
-        # print
-        description = "Iter: {:d}, Loss: {:.4f}, Attr: {:.5f}, Rep: {:.5f}, batch size {:d}".format(
-            batch_idx,
-            loss.item() / self.handresult.batch_size,
-            attraction_loss.item() / self.handresult.batch_size,
-            repulsion_loss.item() / self.handresult.batch_size,
-            self.handresult.batch_size,
-        )
-        if batch_idx % self.opt.plot.log_period == 0:
-            logger.info(description)
 
         # logging
         R_euler = matrix_to_euler_angles(R_matrix, "XYZ")
@@ -147,15 +154,15 @@ class OptimizeObject(LightningModule):
 
         # plot point cloud
         if batch_idx % self.opt.plot.pc_period == self.opt.plot.pc_period - 1:
-            for b in self.handresult.batch_size:
+            for b in range(self.handresult.batch_size):
                 verts = torch.cat(
-                    [self.handresult.verts[b], new_object_verts[b]], dim=1
+                    [self.handresult.verts[b], new_object_verts[b]], dim=0
                 )
                 plot_pointcloud(verts, title=f"iter: {batch_idx}, batch{b}")
 
         # save mesh
         if batch_idx % self.opt.plot.mesh_period == 0:
-            is_textured = self.dataset.nimble
+            is_textured = self.handresult.dataset.nimble
             object_aligned_verts = new_object_verts.detach()
             object_aligned_verts = (
                 object_aligned_verts * self.handresult.max_norm
@@ -173,8 +180,8 @@ class OptimizeObject(LightningModule):
             for b in range(self.handresult.batch_size):
                 out_obj_path = os.path.join(
                     self.cfg.results_dir,
-                    "batch_{}_iter_{}.obj".format(b, batch_idx),
-                )
+                    "hand_{}_object_{}_iter_{}.obj".format(self.handresult.fidxs[b], self.object_fidx[0], batch_idx),
+                )  # assume object batch size is 1
                 p3d_io.save_mesh(
                     merged_meshes[b], out_obj_path, include_textures=is_textured
                 )
@@ -183,7 +190,7 @@ class OptimizeObject(LightningModule):
         # render hand
         if batch_idx % self.opt.plot.render_period == 0:
             if batch_idx % self.opt.plot.mesh_period != 0:
-                is_textured = self.dataset.nimble
+                is_textured = self.handresult.dataset.nimble
                 object_aligned_verts = new_object_verts.detach()
                 object_aligned_verts = (
                     object_aligned_verts * self.handresult.max_norm
@@ -208,8 +215,8 @@ class OptimizeObject(LightningModule):
                 # save rendered hand
                 out_rendered_path = os.path.join(
                     self.cfg.results_dir,
-                    "batch_{}_iter_{}_rendering.png".format(b, batch_idx),
-                )
+                    "hand_{}_object_{}_iter_{}_rendering.png".format(self.handresult.fidxs[b], self.object_fidx[0], batch_idx),
+                )  # assume object batch size is 1
                 Image.fromarray(rendered_images[b]).save(out_rendered_path)
                 logger.info(f"Saved {out_rendered_path}")
 
@@ -221,8 +228,8 @@ class OptimizeObject(LightningModule):
                 )
                 out_blended_path = os.path.join(
                     self.cfg.results_dir,
-                    "batch_{}_iter_{}_blended.png".format(b, batch_idx),
-                )
+                    "hand_{}_object_{}_iter_{}_blended.png".format(self.handresult.fidxs[b], self.object_fidx[0], batch_idx),
+                )  # assume object batch size is 1
                 Image.fromarray(blended_image).save(out_blended_path)
                 logger.info(f"Saved {out_blended_path}")
 
@@ -237,5 +244,5 @@ class OptimizeObject(LightningModule):
         center = verts.mean(dim=1, keepdim=True)
         verts = verts - center
         max_norm = verts.norm(dim=2).max(dim=1)[0]
-        verts = verts / max_norm
+        verts = verts / max_norm.unsqueeze(1).unsqueeze(2)
         return verts, center, max_norm

@@ -47,9 +47,14 @@ def main(cfg):
     # main
     reconstruction = ReconstructHand(cfg, accelerator)
     reconstructor = pl.Trainer(
-        deterministic=True, devices=cfg.devices, accelerator=accelerator
+        devices=cfg.devices,
+        accelerator=accelerator,
+        max_epochs=1,
+        enable_checkpointing=False,
     )
-    reconstructor.predict(reconstruction)
+    logger.info(f"Max global steps for hands: {reconstructor.max_steps}")
+    logger.info(f"Max epochs for hands: {reconstructor.max_epochs}")
+    reconstructor.fit(reconstruction)
 
     return
 
