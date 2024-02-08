@@ -1,7 +1,6 @@
 Niters: 1000
 lr: 0.05
-hand_batch: 1
-obj_batch: 1
+hand_batch: 6
 
 plot:
   log_period: 100

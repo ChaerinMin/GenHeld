@@ -3,9 +3,6 @@ import logging
 import os
 import pickle
 import random
-from collections import namedtuple
-from dataclasses import dataclass
-from typing import Dict, NamedTuple
 import json
 
 import cv2
@@ -14,105 +11,16 @@ import torch
 from PIL import Image
 from pytorch3d.io import load_obj, load_ply
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
-from torch import Tensor
 from torch.utils.data import Dataset
 
+from dataset import _P3DFaces
 from submodules.NIMBLE_model.utils import vertices2landmarks
 
-_P3DFaces = namedtuple(
-    "_P3DFaces",
-    ["verts_idx", "normals_idx", "textures_idx", "materials_idx"],
-    defaults=(None,) * 4,
-)  # Python 3.7+
 
 NIMBLE_N_VERTS = 5990
 ROOT_JOINT_IDX = 9
 # NIMBLE_ROOT_ID = 11
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class HandData:
-    fidxs: int
-    images: Tensor
-    intrinsics: Tensor
-    light: Dict[str, Tensor]
-    handarm_segs: Tensor
-    object_segs: Tensor
-    hand_verts: Tensor
-    hand_faces: NamedTuple
-    xyz: Tensor = None
-    inpainted_images: Tensor = None
-    hand_aux: NamedTuple = None
-
-    def to(self, device):
-        self.handarm_segs = self.handarm_segs.to(device)
-        self.object_segs = self.object_segs.to(device)
-        self.hand_verts = self.hand_verts.to(device)
-        self.xyz = self.xyz.to(device)
-
-        # to(device) of NamedTuple
-        hand_faces = {
-            field: getattr(self.hand_faces, field).to(device)
-            for field in self.hand_faces._fields
-        }
-        self.hand_faces = _P3DFaces(**hand_faces)
-
-        # to(device) of Dict
-        if self.hand_aux is not None:
-            hand_aux = {}
-            for k, v in self.hand_aux.items():
-                if isinstance(v, torch.Tensor):
-                    hand_aux[k] = v.to(device)
-                else:
-                    hand_aux[k] = v
-                    logger.debug(
-                        f"{k} hasn't been moved to device. Got {type(hand_aux[k])}"
-                    )
-            self.hand_aux = hand_aux
-
-
-@dataclass
-class ObjectData:
-    fidx: str
-    object_verts: Tensor
-    object_faces: NamedTuple
-    object_aux: NamedTuple = None
-    sampled_verts: Tensor = None
-    contacts: Tensor = None
-    partitions: Tensor = None
-
-    def to(self, device):
-        self.object_verts = self.object_verts.to(device)
-
-        # to(device) of NamedTuple
-        object_faces = {
-            field: getattr(self.object_faces, field).to(device)
-            for field in self.object_faces._fields
-        }
-        self.object_faces = _P3DFaces(**object_faces)
-
-        # to(device) of Dict
-        if self.object_aux is not None:
-            object_aux = {}
-            for k, v in self.object_aux.items():
-                if isinstance(v, torch.Tensor):
-                    object_aux[k] = v.to(device)
-                else:
-                    object_aux[k] = v
-                    logger.debug(
-                        f"{k} hasn't been moved to device. Got {type(object_aux[k])}"
-                    )
-            self.object_aux = object_aux
-
-        # to(device) of Optional
-        if self.sampled_verts is not None:
-            self.sampled_verts = self.sampled_verts.to(device)
-        if self.contacts is not None:
-            self.contacts = self.contacts.to(device)
-        if self.partitions is not None:
-            self.partitions = self.partitions.to(device)
-        return self
 
 
 class HandDataset(Dataset):
@@ -349,7 +257,7 @@ class HandDataset(Dataset):
             dim=1,
         )
         nimble_ha_faces = _P3DFaces(
-            verts_idx=self.nimble_ha_verts_idx.unsqueeze(0),
+            verts_idx=self.nimble_ha_verts_idx.unsqueeze(0).repeat(batch_size, 1, 1),
             textures_idx=nimble_ha_vt,
         )
         return nimble_ha_verts, nimble_ha_faces
@@ -479,3 +387,4 @@ class ObjectDataset(Dataset):
             return_dict["partitions"] = partitions
 
         return return_dict
+    

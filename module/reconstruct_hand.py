@@ -87,7 +87,7 @@ class ReconstructHand(LightningModule):
         )
         for b in range(batch_size):
             logger.debug(
-                f"batch {b}, [hand] center: {hand_center[b]}, max_norm: {hand_max_norm[b]:.3f}"
+                f"hand {fidxs[b]}, center: {hand_center[b]}, max_norm: {hand_max_norm[b]:.3f}"
             )
 
         # nimble to mano

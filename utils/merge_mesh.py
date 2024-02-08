@@ -1,54 +1,75 @@
 import logging
-import torch 
+import torch
 from pytorch3d.structures.meshes import Meshes
 from pytorch3d.renderer import TexturesUV
+from torch import Tensor
+from typing import NamedTuple, Dict
+from dataset import PaddedTensor
 
 logger = logging.getLogger(__name__)
 
 
-def merge_meshes(is_textured, a_verts, a_faces, a_aux, b_verts, b_faces, b_aux):
+def merge_ho(
+    is_textured: bool,
+    h_verts: Tensor,
+    h_faces: NamedTuple,
+    h_aux: Dict,
+    o_verts: PaddedTensor,
+    o_faces: NamedTuple,
+    o_aux: Dict,
+):
     """
-    Not support heterogeneous batching. Only support batch size 1.
+    Hands are standard batching.
+    Objects are heterogeneous batching.
     Vertex normals should be forgotten and recalculated, because vertex positions could have been modified
     """
+    batch_size = h_verts.shape[0]
 
-    if a_verts.shape[0] > 1:
-        logger.error("Only support batch size 1")
-
-    verts = torch.cat([a_verts, b_verts], dim=1)
-    f_v = torch.cat([a_faces.verts_idx, b_faces.verts_idx + a_verts.shape[1]], dim=1)
+    verts = torch.cat([h_verts, o_verts.padded], dim=1)
+    f_v = torch.cat([h_faces.verts_idx, h_verts.shape[1] + o_faces.verts_idx.padded], dim=1)
+    for b in range(batch_size):
+        f_v[b, h_faces.verts_idx.shape[1] + o_faces.verts_idx.split_sizes[b] :] = -1
 
     if is_textured:
         # texture images
-        if len(a_aux["texture_images"]) > 1:
+        if len(h_aux["texture_images"]) > 1:
             logger.error(
-                f"Only support one texture image for each mesh, got {len(a_aux['texture_images'])}"
+                f"Only support one texture image for each mesh, got {len(h_aux['texture_images'])}"
             )
-        if len(b_aux["texture_images"]) > 1:
+        if len(o_aux["texture_images"]) > 1:
             logger.error(
-                f"Only support one texture image for each mesh, got {len(b_aux['texture_images'])}"
+                f"Only support one texture image for each mesh, got {len(o_aux['texture_images'])}"
             )
-        batch_size, a_H, a_W, a_C = a_aux["texture_images"]["material_0"].shape
-        batch_size, b_H, b_W, b_C = b_aux["texture_images"]["material_0"].shape
-        assert a_C == b_C == 3
-        max_H = max(a_H, b_H)
+        _, h_H, h_W, h_C = h_aux["texture_images"]["material_0"].shape
+        _, o_H, o_W, o_C = o_aux["texture_images"]["material_0"].shape
+        assert h_C == o_C == 3
+        max_H = max(h_H, o_H)
         texture_images = torch.ones(
-            (batch_size, max_H, a_W + b_W, a_C), dtype=torch.float32
+            (batch_size, max_H, h_W + o_W, h_C), dtype=torch.float32
         )
-        texture_images[:, :a_H, :a_W] = a_aux["texture_images"]["material_0"]
-        texture_images[:, :b_H, a_W:] = b_aux["texture_images"]["material_0"]
+        texture_images[:, :h_H, :h_W] = h_aux["texture_images"]["material_0"]
+        texture_images[:, :o_H, h_W:] = o_aux["texture_images"]["material_0"]
 
         # vt
-        a_vt, b_vt = a_aux["verts_uvs"].clone(), b_aux["verts_uvs"].clone()
-        a_vt[..., 0] = a_vt[..., 0] * a_W / (a_W + b_W)
-        a_vt[..., 1] = (a_vt[..., 1] * a_H + max_H - a_H) / max_H
-        b_vt[..., 0] = (a_W + b_vt[..., 0] * b_W) / (a_W + b_W)
-        b_vt[..., 1] = (b_vt[..., 1] * b_H + max_H - b_H) / max_H
-        vt = torch.cat([a_vt, b_vt], dim=1)
+        h_vt, o_vt = (
+            h_aux["verts_uvs"].clone(),
+            o_aux["verts_uvs"].padded.clone(),
+        )
+        h_vt[..., 0] = h_vt[..., 0] * h_W / (h_W + o_W)
+        h_vt[..., 1] = (h_vt[..., 1] * h_H + max_H - h_H) / max_H
+        o_vt[..., 0] = (h_W + o_vt[..., 0] * o_W) / (h_W + o_W)
+        o_vt[..., 1] = (o_vt[..., 1] * o_H + max_H - o_H) / max_H
+        for b in range(batch_size):
+            o_vt[b, o_aux["verts_uvs"].split_sizes[b] :] = 0.0
+        vt = torch.cat([h_vt, o_vt], dim=1)
         f_vt = torch.cat(
-            [a_faces.textures_idx, b_faces.textures_idx + a_aux["verts_uvs"].shape[1]],
+            [h_faces.textures_idx, o_faces.textures_idx.padded + h_aux["verts_uvs"].shape[1]],
             dim=1,
         )
+        for b in range(batch_size):
+            f_vt[
+                b, h_faces.textures_idx.shape[1] + o_faces.textures_idx.split_sizes[b] :
+            ] = -1
 
         # pytorch3d Textures
         textures = TexturesUV(

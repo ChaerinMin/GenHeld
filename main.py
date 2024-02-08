@@ -2,6 +2,7 @@ import logging
 import os
 import random
 import time
+import warnings
 
 import hydra
 import numpy as np
@@ -11,6 +12,8 @@ from omegaconf import OmegaConf
 
 from module import ReconstructHand
 
+logging.basicConfig(level=logging.INFO)
+warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 logger.info(f"System timezone is {time.strftime('%Z')}")
 
@@ -18,7 +21,6 @@ random_seed = 980828
 torch.manual_seed(random_seed)
 torch.cuda.manual_seed(random_seed)
 # torch.cuda.manual_seed_all(random_seed) # if use multi-GPU
-# torch.backends.cudnn.deterministic = True  # if final test
 # torch.backends.cudnn.benchmark = False
 np.random.seed(random_seed)
 random.seed(random_seed)

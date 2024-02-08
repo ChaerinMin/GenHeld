@@ -1,1 +1,1 @@
-from .merge_mesh import merge_meshes
+from .merge_mesh import merge_ho

@@ -1,7 +1,8 @@
-from .base_dataset import _P3DFaces
-from .base_dataset import HandData, ObjectData
-from torch.utils.data import Dataset
 import torch
+from torch.utils.data import Dataset
+
+from .base_dataclass import PaddedTensor, HandData, ObjectData, _P3DFaces
+
 
 class DummyDataset(Dataset):
     def __init__(self, length):
