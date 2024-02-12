@@ -1,12 +1,14 @@
-import os
 import logging
+import os
+
+import matplotlib.colors as mcolors
 import numpy as np
+import open3d as o3d
 import torch
 from torch.nn import Module
-import open3d as o3d
-import matplotlib.colors as mcolors
+from collections import namedtuple
+
 from . import contact_utils
-from dataset import PaddedTensor
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +45,11 @@ def masked_mean_loss(dists, mask):
     valid_vals = mask.sum()
     if valid_vals > 0:
         loss = (mask * dists).sum() / valid_vals
+        losses = (mask * dists).sum(1) / mask.sum(1)
     else:
         loss = torch.tensor(0.0, dtype=dists.dtype, device=dists.device)
-    return loss
+        losses = torch.zeros(dists.shape[0], dtype=dists.dtype, device=dists.device)
+    return loss, losses
 
 
 class ContactLoss(Module):
@@ -68,6 +72,9 @@ class ContactLoss(Module):
         self.penetr_hand = []
         self.hand_part = []
         self.obj_part = []
+
+        # loss and losses
+        self.LossNLosses = namedtuple("LossNLosses", ["loss", "losses"])
 
         return
 
@@ -93,15 +100,17 @@ class ContactLoss(Module):
         )
         exterior_hand = []
         for b in range(batch_size):
-            obj_triangles = obj_verts_pt.padded[b, obj_faces.verts_idx.padded[b, :obj_faces.verts_idx.split_sizes[b]]]
+            obj_triangles = obj_verts_pt.padded[
+                b, obj_faces.verts_idx.padded[b, : obj_faces.verts_idx.split_sizes[b]]
+            ]
             ext_hand = contact_utils.batch_mesh_contains_points(
-                hand_verts_pt.detach()[b:b+1], obj_triangles.detach()[None, ...]
+                hand_verts_pt.detach()[b : b + 1], obj_triangles.detach()[None, ...]
             )
             exterior_hand.append(ext_hand)
         exterior_hand = torch.cat(exterior_hand, dim=0)
         penetr_o_mask = ~exterior_obj
         for b in range(batch_size):
-            penetr_o_mask[b, obj_verts_pt.split_sizes[b]:] = 0
+            penetr_o_mask[b, obj_verts_pt.split_sizes[b] :] = 0
         penetr_h_mask = ~exterior_hand
 
         # plot penetration
@@ -112,10 +121,21 @@ class ContactLoss(Module):
             self.penetr_hand.append(hand_verts_pt.detach()[b, penetr_h_mask[b]])
 
         # min vertex pairs between hand and object
-        dists = torch.ones(batch_size, hand_verts_pt.shape[1], max(obj_verts_pt.split_sizes),device=hand_verts_pt.device, dtype=hand_verts_pt.dtype) * 1e10
+        dists = (
+            torch.ones(
+                batch_size,
+                hand_verts_pt.shape[1],
+                max(obj_verts_pt.split_sizes),
+                device=hand_verts_pt.device,
+                dtype=hand_verts_pt.dtype,
+            )
+            * 1e10
+        )
         for b in range(batch_size):
             obj_size = obj_verts_pt.split_sizes[b]
-            dists[b, :, :obj_size] = batch_pairwise_dist(hand_verts_pt[b:b+1], obj_verts_pt.padded[b:b+1, :obj_size]).squeeze(0)
+            dists[b, :, :obj_size] = batch_pairwise_dist(
+                hand_verts_pt[b : b + 1], obj_verts_pt.padded[b : b + 1, :obj_size]
+            ).squeeze(0)
         minoh, minoh_idxs = torch.min(dists, 1)
         minho, minho_idxs = torch.min(dists, 2)
         results_close = batch_index_select(obj_verts_pt.padded, 1, minho_idxs)
@@ -127,10 +147,14 @@ class ContactLoss(Module):
             anchor_o_dist = torch.norm(results_o_close - obj_verts_pt.padded, 2, 2)
         elif self.contact_target == "obj":
             anchor_dists = torch.norm(results_close - hand_verts_pt.detach(), 2, 2)
-            anchor_o_dist = torch.norm(results_o_close.detach() - obj_verts_pt.padded, 2, 2)
+            anchor_o_dist = torch.norm(
+                results_o_close.detach() - obj_verts_pt.padded, 2, 2
+            )
         elif self.contact_target == "hand":
             anchor_dists = torch.norm(results_close.detach() - hand_verts_pt, 2, 2)
-            anchor_o_dist = torch.norm(results_o_close - obj_verts_pt.padded.detach(), 2, 2)
+            anchor_o_dist = torch.norm(
+                results_o_close - obj_verts_pt.padded.detach(), 2, 2
+            )
         else:
             raise ValueError(
                 "contact_target {} not in [all|obj|hand]".format(self.contact_target)
@@ -175,7 +199,9 @@ class ContactLoss(Module):
                     continue
                 hand_part = hand_verts_pt[:, zone_idxs]
                 for b in range(batch_size):
-                    partmask = torch.zeros_like(partition_object.padded[b], dtype=torch.bool)
+                    partmask = torch.zeros_like(
+                        partition_object.padded[b], dtype=torch.bool
+                    )
                     for part in handpart:
                         partmask = torch.logical_or(
                             partmask, (partition_object.padded[b] == part)
@@ -198,10 +224,9 @@ class ContactLoss(Module):
                     elif self.contact_mode == "dist":
                         contact_vals_part[b : b + 1, zone_idxs] = anchor_part
                     elif self.contact_mode == "dist_tanh":
-                        contact_vals_part[
-                            b : b + 1, zone_idxs
-                        ] = self.contact_thresh * torch.tanh(
-                            anchor_part / self.contact_thresh
+                        contact_vals_part[b : b + 1, zone_idxs] = (
+                            self.contact_thresh
+                            * torch.tanh(anchor_part / self.contact_thresh)
                         )
                     else:
                         raise ValueError(
@@ -236,7 +261,7 @@ class ContactLoss(Module):
                 "[dist_sq|dist|dist_tanh]".format(self.collision_mode)
             )
         for b in range(batch_size):
-            collision_o_vals[b, obj_verts_pt.split_sizes[b]:] = 0
+            collision_o_vals[b, obj_verts_pt.split_sizes[b] :] = 0
 
         # C and Ext(Obj) (ObMan)
         missed_mask = below_dist & exterior_hand
@@ -264,16 +289,23 @@ class ContactLoss(Module):
             )
 
         # compute losses
-        missed_loss = masked_mean_loss(contact_vals, missed_mask)  # attraction loss
-        penetr_loss = masked_mean_loss(collision_vals, penetr_h_mask)  # repulsion loss
-        penetr_loss += masked_mean_loss(
+        missed_loss, missed_losses = masked_mean_loss(contact_vals, missed_mask)  # attraction loss
+        penetr_h_loss, penetr_h_losses = masked_mean_loss(collision_vals, penetr_h_mask)  # repulsion loss
+        penetr_o_loss, penetr_o_losses = masked_mean_loss(
             collision_o_vals, penetr_o_mask
         )  # repulsion loss
+        penetr_loss = penetr_h_loss + penetr_o_loss
+        penetr_losses = penetr_h_losses + penetr_o_losses
         if self.contact_sym:
             obj2hand_dists = torch.sqrt(minoh)
             sym_below_dist = minoh < self.contact_thresh
-            sym_loss = masked_mean_loss(obj2hand_dists, sym_below_dist)
+            sym_loss, sym_losses = masked_mean_loss(obj2hand_dists, sym_below_dist)
             missed_loss = missed_loss + sym_loss
+            missed_losses = missed_losses + sym_losses
+
+        # loss and losses 
+        missed_loss = self.LossNLosses(missed_loss, missed_losses)
+        penetr_loss = self.LossNLosses(penetr_loss, penetr_losses)        
 
         # contact_info, metrics
         max_penetr_depth = (
@@ -305,13 +337,16 @@ class ContactLoss(Module):
             penetr_obj = self.penetr_obj[b]
             penetr = torch.cat([penetr_hand, penetr_obj], dim=0)
             if penetr.shape[0] == 0:
-                logger.info(f"Hand {hand_fidxs[b]}, object {object_fidxs[b]}, at iter {iter} has no penetration")
+                logger.info(
+                    f"Hand {hand_fidxs[b]}, object {object_fidxs[b]}, at iter {iter} has no penetration"
+                )
                 continue
             penetr = o3d.utility.Vector3dVector(penetr.cpu().numpy())
             penetr = o3d.geometry.PointCloud(penetr)
             penetr.paint_uniform_color([0, 0, 0])
             save_path = os.path.join(
-                self.cfg.results_dir, f"hand_{hand_fidxs[b]}_object_{object_fidxs[b]}_iter_{iter}_penetr_hand.ply"
+                self.cfg.results_dir,
+                f"hand_{hand_fidxs[b]}_object_{object_fidxs[b]}_iter_{iter}_penetr_hand.ply",
             )
             saved = o3d.io.write_point_cloud(save_path, penetr)
             if saved:
@@ -364,7 +399,8 @@ class ContactLoss(Module):
 
             # save
             save_path = os.path.join(
-                self.cfg.results_dir, f"hand_{hand_fidxs[b]}_object_{object_fidxs[b]}_iter_{iter}_contact.ply"
+                self.cfg.results_dir,
+                f"hand_{hand_fidxs[b]}_object_{object_fidxs[b]}_iter_{iter}_contact.ply",
             )
             saved = o3d.io.write_point_cloud(save_path, contact_pc)
             if saved:

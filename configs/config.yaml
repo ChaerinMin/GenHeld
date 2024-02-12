@@ -6,11 +6,19 @@ defaults:
   - vis: visualize
   - _self_
 
-debug: True
+debug: False
+test_only: False
 devices: [0]
 
-results_dir: ??? 
+resume_dir: ''
+output_dir: ???   # will be set automatically
+results_dir: ???  # will be set automatically
+ckpt_dir: ???     # will be set automatically
 
 hydra:
   job:
     chdir: False 
+  
+  job_logging:
+    root:
+      level: WARNING

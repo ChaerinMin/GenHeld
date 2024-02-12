@@ -1,11 +1,11 @@
-Niters: 1000
+Niters: 20
 lr: 0.1
-hand_batch: 7
+hand_batch: 1
 
 plot:
-  log_period: 100
-  mesh_period: 100
-  render_period: 100
+  log_period: 5
+  mesh_period: 10000
+  render_period: 10000
   pc_period: 1000000
   contact_period: 1000000
 

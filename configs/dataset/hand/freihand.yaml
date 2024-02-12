@@ -16,6 +16,6 @@ opt:
     nimble: True
     nimble_pm_dict: "/dev/hdd/NIMBLE/assets/NIMBLE_DICT_9137.pkl"
     nimble_mano_vreg: "/dev/hdd/NIMBLE/assets/NIMBLE_MANO_VREG.pkl"
-    arm: True
+    arm: False
     smplx_model: "/dev/hdd/SMPLX/models/SMPLX_NEUTRAL.pkl"
     smplx_arm_corr: "/dev/hdd/SMPLX/template/smplx_arm_corr.pkl"
