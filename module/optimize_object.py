@@ -39,6 +39,7 @@ class OptimizeObject(LightningModule):
             batch_size=handresult.batch_size,
             shuffle=True,
             collate_fn=ObjectData.collate_fn,
+            pin_memory=True,
         )
 
         # parameters
@@ -148,12 +149,12 @@ class OptimizeObject(LightningModule):
     def train_dataloader(self):
         # loop Niters times
         dummy_dataset = DummyDataset(self.opt.Niters)
-        loop = DataLoader(dummy_dataset, batch_size=1, shuffle=False)
+        loop = DataLoader(dummy_dataset, batch_size=1, shuffle=False, pin_memory=True)
         return loop
     
     def test_dataloader(self):
         dummy_dataset = DummyDataset(1)
-        loop = DataLoader(dummy_dataset, batch_size=1, shuffle=False)
+        loop = DataLoader(dummy_dataset, batch_size=1, shuffle=False, pin_memory=True)
         return loop        
 
     def configure_optimizers(self):

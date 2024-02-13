@@ -12,7 +12,6 @@ from PIL import Image
 from pytorch3d.io import load_obj, load_ply
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
 from torch.utils.data import Dataset
-
 from dataset import _P3DFaces
 from submodules.NIMBLE_model.utils import vertices2landmarks
 
@@ -24,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 class HandDataset(Dataset):
-    def __init__(self, opt) -> None:
+    def __init__(self, opt, cfg) -> None:
+        self.cfg = cfg
         self.image = opt.image
         self.hand = opt.hand
 

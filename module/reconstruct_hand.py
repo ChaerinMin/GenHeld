@@ -2,11 +2,10 @@ from dataclasses import dataclass
 import logging
 import os
 from typing import Any, NamedTuple
-import glob 
+import glob
 import re
 
 import numpy as np
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 import torch
 import pytorch_lightning as pl
 from hydra.utils import instantiate
@@ -17,6 +16,9 @@ from rich.console import Console
 from torch import Tensor
 from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import WandbLogger
+from torch.utils.data.sampler import Sampler
+import trimesh
+from scipy.optimize import minimize
 
 from dataset import HandData, _P3DFaces
 from module.optimize_object import OptimizeObject
@@ -26,25 +28,118 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+class DiscriminateHand(Sampler):
+    def __init__(self, opt, cfg, dataset):
+        self.opt = opt
+        self.cfg = cfg
+        self.dataset = dataset
+
+        # convex hull visualize path
+        self.convex_hull_dir = os.path.join(self.cfg.output_dir, "convex_hull")
+        os.makedirs(self.convex_hull_dir, exist_ok=True)
+
+        # accepted hands path
+        self.accepted_hands_path = os.path.join(self.cfg.output_dir, "accepted_hands.npy")
+        if not os.path.exists(self.accepted_hands_path):
+            accepted_hands = np.zeros((len(self.dataset), 2), dtype=np.int32)
+            accepted_hands[:, 0] = np.array(self.dataset.fidxs)
+            np.save(self.accepted_hands_path, accepted_hands)
+            logger.debug(f"Created {self.accepted_hands_path}")
+        else:
+            logger.debug(f"{self.accepted_hands_path} exists. Will be reused.")
+
+        return
+
+    @staticmethod
+    def objective_function(center, convex_hull):
+        sdf = trimesh.proximity.signed_distance(convex_hull, [center])  # pip install rtree needed
+        sdf *= -1  # make outside positive
+        sdf += convex_hull.scale  # avoid negative loss
+        return sdf
+
+    def __iter__(self):
+        for i, data in enumerate(self.dataset):
+            # convel hull
+            mesh = trimesh.Trimesh(
+                vertices=data["hand_verts"], faces=data["hand_faces"].verts_idx
+            )
+            convex_hull = mesh.convex_hull
+
+            # optimize
+            initial_center = convex_hull.centroid
+            result = minimize(
+                DiscriminateHand.objective_function,
+                initial_center,
+                args=(convex_hull,),
+                method=self.opt.scipy_method,
+                options={"maxiter": self.opt.max_iter},
+            )
+            inscripted_radius = result.fun
+            inscripted_radius -= convex_hull.scale
+            inscripted_radius *= -1
+
+            # save
+            convex_hull_path = os.path.join(
+                self.convex_hull_dir, f"{data['fidxs']:08d}_convexhull.obj"
+            )
+            convex_hull.export(convex_hull_path)
+            sphere_path = os.path.join(
+                self.convex_hull_dir, f"{data['fidxs']:08d}_sphere.obj"
+            )
+            inscripted_center = result.x
+            sphere = trimesh.creation.icosphere(
+                subdivisions=3, radius=inscripted_radius
+            )
+            sphere.apply_translation(inscripted_center)
+            sphere.export(sphere_path)
+
+            # accept or reject
+            inscripted_ratio = sphere.volume / mesh.volume
+            success = inscripted_ratio >= self.opt.accept_thresh
+            if success:
+                logger.debug(f"Accepted {data['fidxs']}. Radius: {inscripted_radius:.3f}")
+                accepted_hands = np.load(self.accepted_hands_path)
+                assert accepted_hands[i, 0] == data["fidxs"]
+                accepted_hands[i, 1] = 1
+                np.save(self.accepted_hands_path, accepted_hands)
+                logger.debug(f"Updated {self.accepted_hands_path}")
+                yield i
+            else:
+                logger.info(f"Rejected {data['fidxs']}. Radius: {inscripted_radius:.3f}")
+
+        return
+
+    def __len__(self):
+        return len(self.dataset)
+
+
 class ReconstructHand(LightningModule):
     def __init__(self, cfg, accelerator, object_optimization=None):
         super().__init__()
         self.cfg = cfg
         self.object_optimization = object_optimization
         self.accelerator = accelerator
-        self.hand_dataset = instantiate(cfg.hand_dataset)
+        self.hand_dataset = instantiate(cfg.hand_dataset, cfg=cfg, _recursive_=False)
         self.inpainter = instantiate(cfg.vis.inpaint)
 
         return
-    
+
     def train_dataloader(self):
+        hand_discriminator = instantiate(
+            self.cfg.reconstruct_hand.discriminate_hand,
+            cfg=self.cfg,
+            dataset=self.hand_dataset,
+            _recursive_=False,
+        )
         self.dataloader = DataLoader(
             self.hand_dataset,
             batch_size=self.cfg.optimize_object.hand_batch,
             shuffle=False,
+            pin_memory=True,
+            sampler=hand_discriminator,
         )
         return self.dataloader
-    
+
     def test_dataloader(self):
         # test_fidxs
         ckpts = sorted(glob.glob(os.path.join(self.cfg.ckpt_dir, "*.json")))
@@ -56,12 +151,13 @@ class ReconstructHand(LightningModule):
                 fidx = int(match.group(1)[5:])
                 test_fidxs.append(fidx)
                 logger.debug(f"Checkpoint {ckpt} is included in the test")
-        
+
         self.hand_dataset.fidxs = test_fidxs
         self.dataloader = DataLoader(
             self.hand_dataset,
             batch_size=self.cfg.optimize_object.hand_batch,
             shuffle=False,
+            pin_memory=True,
         )
         return self.dataloader
 
@@ -69,19 +165,6 @@ class ReconstructHand(LightningModule):
         self.dummy = torch.tensor([1.0], requires_grad=True)
         return torch.optim.Adam([self.dummy], lr=1.0)
 
-    def on_train_start(self):
-        # resume fidx
-        resume_fidx = 0
-        end_fidx = self.hand_dataset.fidxs[-1] + 1
-        resume_fidx_path = os.path.join(self.cfg.resume_dir, "resume_fidx.txt")
-        if os.path.exists(resume_fidx_path):
-            with open(resume_fidx_path, "r") as f:
-                resume_fidx, end_fidx = map(int, f.read().split("\n"))
-            logger.info(f"Resuming from {resume_fidx}")
-        self.resume_fidx = resume_fidx
-        self.end_fidx = end_fidx
-        return 
-    
     def forward(self, batch):
         data = HandData(**batch)
         fidxs = data.fidxs
@@ -178,16 +261,20 @@ class ReconstructHand(LightningModule):
             inpainted_images=inpainted_images,
         )
         return handresult
-    
+
     def training_step(self, batch, batch_idx):
         handresult = self(batch)
-        if batch['fidxs'][-1] < self.resume_fidx or self.end_fidx <= batch['fidxs'][0]:
-            return
 
         # optimize
         object_optimization = OptimizeObject(self.cfg, handresult)
         callbacks = [LearningRateMonitor(logging_interval="step")]
-        loggers = [WandbLogger(project="optimize_object", offline=self.cfg.debug, save_dir=self.cfg.output_dir)]
+        loggers = [
+            WandbLogger(
+                project="optimize_object",
+                offline=self.cfg.debug,
+                save_dir=self.cfg.output_dir,
+            )
+        ]
         trainer = pl.Trainer(
             devices=self.cfg.devices,
             accelerator=self.accelerator,
@@ -207,7 +294,13 @@ class ReconstructHand(LightningModule):
         handresult = self(batch)
 
         object_optimization = OptimizeObject(self.cfg, handresult)
-        loggers = [WandbLogger(project="test_object", offline=self.cfg.debug, save_dir=self.cfg.output_dir)]
+        loggers = [
+            WandbLogger(
+                project="test_object",
+                offline=self.cfg.debug,
+                save_dir=self.cfg.output_dir,
+            )
+        ]
         tester = pl.Trainer(
             devices=self.cfg.devices[0:1],
             accelerator=self.accelerator,
@@ -217,19 +310,19 @@ class ReconstructHand(LightningModule):
         )
         tester.test(object_optimization)
 
-        return 
-    
-    def on_train_batch_end(self, outputs, batch, batch_idx):       
-        # save resume_fidx
-        fidxs = batch['fidxs']
-        if self.resume_fidx <= fidxs[-1] and fidxs[0] < self.end_fidx:
-            self.resume_fidx =fidxs[-1] + 1
-            resume_fidx_path = os.path.join(self.cfg.output_dir, "resume_fidx.txt")
-            with open(resume_fidx_path, "w") as f:
-                f.write(str(self.resume_fidx.item())+"\n"+str(self.end_fidx))
-            logger.debug(f"Saved {resume_fidx_path}")
+        return
 
-        return 
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        # save resume_fidx
+        fidxs = batch["fidxs"]
+        resume_fidx = fidxs[-1] + 1
+        resume_fidx_path = os.path.join(self.cfg.output_dir, "resume_fidx.txt")
+        with open(resume_fidx_path, "w") as f:
+            f.write(str(resume_fidx.item()) + "\n" + str(self.hand_dataset.end_fidx))
+        logger.debug(f"Saved {resume_fidx_path}")
+
+        return
+
 
 @dataclass
 class HandResult:
