@@ -11,16 +11,22 @@ import torch
 from hydra.utils import instantiate
 from PIL import Image
 from pytorch3d.io import IO
-from pytorch3d.transforms import (Transform3d, axis_angle_to_matrix,
-                                  matrix_to_euler_angles)
+from pytorch3d.transforms import (
+    Transform3d,
+    axis_angle_to_matrix,
+    matrix_to_euler_angles,
+)
 from pytorch_lightning import LightningModule
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
+from trimesh import Trimesh
 
 from dataset import DummyDataset, ObjectData, PaddedTensor
 from loss import ContactLoss
 from utils import merge_ho
 from visualization import blend_images, plot_pointcloud
+from metric import penetration_vox, penetration_volume
+
 
 mpl.rcParams["figure.dpi"] = 80
 logger = logging.getLogger(__name__)
@@ -60,7 +66,9 @@ class OptimizeObject(LightningModule):
         )
 
         # monitoring
-        self.min_losses = torch.ones(self.handresult.batch_size, device=self.device) * 1e10
+        self.min_losses = (
+            torch.ones(self.handresult.batch_size, device=self.device) * 1e10
+        )
 
         return
 
@@ -81,7 +89,7 @@ class OptimizeObject(LightningModule):
         # normalize to center
         self.normalize_ho()
         return
-    
+
     def on_test_start(self):
         batch_size = self.handresult.batch_size
 
@@ -89,29 +97,40 @@ class OptimizeObject(LightningModule):
         test_batch = []
         for b in range(batch_size):
             # find checkpoint
-            ckpts = glob.glob(os.path.join(self.cfg.ckpt_dir, f"hand_{self.handresult.fidxs[b]:08d}_*.json"))
+            ckpts = glob.glob(
+                os.path.join(
+                    self.cfg.ckpt_dir, f"hand_{self.handresult.fidxs[b]:08d}_*.json"
+                )
+            )
             if len(ckpts) == 0:
-                logger.error(f"No checkpoint found for hand {self.handresult.fidxs[b]:08d}")
+                logger.error(
+                    f"No checkpoint found for hand {self.handresult.fidxs[b]:08d}"
+                )
+                raise FileNotFoundError
             ckpt = sorted(ckpts)[-1]
 
             # find object name
             match = re.search(pattern, ckpt)
             if match is None:
                 logger.error(f"Invalid checkpoint name: {ckpt}")
+                raise FileNotFoundError
             object_fidx = match.group(0)[7:-5]
 
             # find object data
-            idx = self.object_dataset.fidxs.index(object_fidx)            
+            idx = self.object_dataset.fidxs.index(object_fidx)
             test_batch.append(self.object_dataset[idx])
 
             # load checkpoint
             with open(ckpt, "r") as f:
                 checkpoint = json.load(f)
-                state_dict = checkpoint['state_dict']
-                self.s_params[b] = state_dict['s_params']
-                self.t_params[b] = torch.tensor(state_dict['t_params'])
-                self.R_params[b] = torch.tensor(state_dict['R_params'])
-        
+                state_dict = checkpoint["state_dict"]
+                self.s_params[b] = torch.tensor(state_dict["s_params"])
+                self.t_params[b] = torch.tensor(state_dict["t_params"])
+                self.R_params[b] = torch.tensor(state_dict["R_params"])
+        self.s_params = self.s_params.to(self.device)
+        self.t_params = self.t_params.to(self.device)
+        self.R_params = self.R_params.to(self.device)
+
         # load object data
         test_batch = ObjectData.collate_fn(test_batch)
         data = ObjectData(**test_batch)
@@ -122,12 +141,15 @@ class OptimizeObject(LightningModule):
         self.object_aux = data.object_aux
         self.sampled_verts = data.sampled_verts
         self.contact_object = data.contacts
-        self.partition_object = data.partitions   
+        self.partition_object = data.partitions
 
         # normalize to center
-        self.normalize_ho()     
-        
-        return 
+        self.normalize_ho()
+
+        # metric logging
+        self.metric_results = None
+
+        return
 
     def normalize_ho(self):
         self.object_verts, object_center, object_max_norm = (
@@ -144,31 +166,31 @@ class OptimizeObject(LightningModule):
             for i in range(sampled_verts.shape[0]):
                 sampled_verts[i, self.sampled_verts.split_sizes[i] :] = 0.0
             self.sampled_verts.padded = sampled_verts
-        return 
+        return
 
     def train_dataloader(self):
         # loop Niters times
         dummy_dataset = DummyDataset(self.opt.Niters)
         loop = DataLoader(dummy_dataset, batch_size=1, shuffle=False, pin_memory=True)
         return loop
-    
+
     def test_dataloader(self):
         dummy_dataset = DummyDataset(1)
         loop = DataLoader(dummy_dataset, batch_size=1, shuffle=False, pin_memory=True)
-        return loop        
+        return loop
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
             [self.s_params, self.t_params, self.R_params], lr=self.opt.lr
         )
         return optimizer
-    
+
     def on_after_batch_transfer(self, batch, dataloader_idx):
         self.min_losses = self.min_losses.to(self.device)
         return batch
-    
+
     def forward(self, batch, batch_idx):
-        self.batch_idx = batch_idx 
+        self.batch_idx = batch_idx
 
         # transform the object verts
         s_sigmoid = torch.sigmoid(self.s_params) * 3.0 - 1.5
@@ -192,9 +214,11 @@ class OptimizeObject(LightningModule):
             new_sampled_verts = None
 
         return new_object_verts, new_sampled_verts, R_matrix, s_sigmoid
-    
+
     def training_step(self, batch, batch_idx):
-        new_object_verts, new_sampled_verts, R_matrix, s_sigmoid = self(batch, batch_idx)
+        new_object_verts, new_sampled_verts, R_matrix, s_sigmoid = self(
+            batch, batch_idx
+        )
 
         # loss
         (
@@ -252,12 +276,96 @@ class OptimizeObject(LightningModule):
         return outputs
 
     def test_step(self, batch, batch_idx):
-        new_object_verts, new_sampled_verts, R_matrix, s_sigmoid = self(batch, batch_idx)
+        scale_cm = self.handresult.max_norm[0].item() * 100  # should be half the hand length
+        new_object_verts, new_sampled_verts, *_ = self(batch, batch_idx)
+        if self.handresult.verts.shape[0] > 1:
+            logger.error(f"Batch size > 1 is not supported for evaluation.")
+            raise ValueError
 
-        # compute metrics with the new object verts and self (handresult and the loaded parameters).
-        logger.warning("Evaluation is not implemented yet.")
-        return 
-    
+        # contact ratio
+        *_, contact_info, metrics = self.contact_loss(
+            self.handresult.verts,
+            self.handresult.faces,
+            new_object_verts,
+            self.object_faces,
+            sampled_verts=new_sampled_verts,
+            contact_object=self.contact_object,
+            partition_object=self.partition_object,
+        )
+        min_dists = contact_info["min_dists"]
+        min_dists = min_dists[0]  # batch = 1
+        contact_zones = []
+        for finger in contact_info["contact_zones"].values():
+            contact_zones.extend(finger)
+        num_zones = len(contact_zones)
+        min_dists = min_dists[contact_zones]
+        contact_ratio = (
+            (min_dists * scale_cm) < self.cfg.metric.contact.thresh
+        ).sum().float() / num_zones
+
+        # to cpu
+        hand_fidx = self.handresult.fidxs.cpu().numpy()[0]
+        hand_verts_cpu = self.handresult.verts.cpu().numpy()[0]
+        hand_faces_cpu = self.handresult.faces.verts_idx.cpu().numpy()[0]
+        obj_fidx = self.object_fidx[0]
+        obj_verts_cpu = new_object_verts.padded.cpu().numpy()[0]
+        obj_faces_cpu = self.object_faces.verts_idx.padded.cpu().numpy()[0]
+
+        # penetration
+        pene_depth = metrics["max_penetr"] * scale_cm
+        hand_mesh = Trimesh(
+            vertices=hand_verts_cpu,
+            faces=hand_faces_cpu,
+        )
+        obj_mesh = Trimesh(
+            vertices=obj_verts_cpu,
+            faces=obj_faces_cpu,
+        )
+        pene_vox = penetration_vox(
+            hand_mesh,
+            obj_mesh,
+            pitch=(self.cfg.metric.penetration.vox.pitch / scale_cm),
+        ) * (scale_cm ** 3)
+        pene_volume = penetration_volume(
+            hand_mesh, obj_mesh, engine=self.cfg.metric.penetration.volume.engine
+        ) * (scale_cm ** 3)
+        hand_volume = hand_mesh.volume * (scale_cm ** 3)
+
+        # simulation
+        sim = instantiate(self.cfg.metric.simulation, cfg=self.cfg, _recursive_=False)
+        sd = sim.simulation_displacement(
+            hand_fidx,
+            hand_verts_cpu,
+            hand_faces_cpu,
+            obj_fidx,
+            obj_verts_cpu,
+            obj_faces_cpu,
+        ) * scale_cm
+        sr = sd < self.cfg.metric.simulation.opt.success_thresh
+
+        # diversity (not for YCB)
+
+        # logging
+        logs = {
+            "Hand fidx": int(hand_fidx),
+            "Object fidx": -1,  # placeholder
+            "Contact ratio": contact_ratio.item(),
+            "Pene depth [cm]": pene_depth.item(),
+            "Pene vox [cm3]": float(pene_vox),
+            "Pene volume [cm3]": float(pene_volume),
+            "Hand volume [cm3]": float(hand_volume),
+            "SD [cm]": float(sd),
+            "SR": int(sr),
+        }
+        self.log_dict(
+            logs, prog_bar=True, on_step=True, on_epoch=True, logger=False
+        )  # console logging
+        logs["Hand fidx"] = str(hand_fidx)
+        logs["Object fidx"] = str(obj_fidx)
+        self.metric_results = logs
+
+        return
+
     def on_before_optimizer_step(self, optimizer):
         # save checkpoint
         update_mask = self.current_losses < self.min_losses
@@ -278,11 +386,11 @@ class OptimizeObject(LightningModule):
                     },
                     "metadata": {
                         "iter": self.batch_idx,
-                    }
+                    },
                 }
                 with open(out_ckpt_path, "w") as f:
-                    json.dump(checkpoint, f)  
-        self.update_mask = update_mask             
+                    json.dump(checkpoint, f)
+        self.update_mask = update_mask
         return
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
@@ -422,6 +530,7 @@ class OptimizeObject(LightningModule):
             logger.error(
                 f"verts should be torch.Tensor or PaddedTensor, got {type(verts)}"
             )
+            raise ValueError
 
         # batch normalize mesh
         center = verts.sum(dim=1, keepdim=True) / padded_split[:, None, None]
@@ -440,5 +549,6 @@ class OptimizeObject(LightningModule):
             logger.error(
                 f"verts should be torch.Tensor or PaddedTensor, got {type(verts)}"
             )
+            raise ValueError
 
         return vertices, center, max_norm

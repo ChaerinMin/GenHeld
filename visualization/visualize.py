@@ -34,6 +34,7 @@ def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blend
     # make mask
     if not use_alpha:
         logger.error("Only support use_alpha=True")
+        raise ValueError
     alpha = foreground[..., 3]
     mask = alpha > (255 / 2.0)
     mask = mask * np.array(255, dtype=np.uint8)
@@ -43,6 +44,7 @@ def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blend
         or foreground.shape[1] != background.shape[1]
     ):
         logger.error("Only support foreground and background have the same shape")
+        raise ValueError
 
     if blend_type == "poisson":
         center = (foreground.shape[0] // 2, foreground.shape[1] // 2)
@@ -57,6 +59,7 @@ def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blend
         blended_image = blended_image.astype(np.uint8)
     else:
         logger.error(f"Unknown blend_type: {blend_type}")
+        raise ValueError
 
     return blended_image
 

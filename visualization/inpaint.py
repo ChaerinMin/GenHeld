@@ -35,6 +35,7 @@ class Inpainter:
             handarm_masks = torch.stack(handarm_masks, dim=0)
         else:
             logger.error(f"Unknown inpaint hand_type: {self.hand_type}")
+            raise ValueError
 
         # object mask
         object_mask = torch.zeros_like(object_segs)
@@ -50,6 +51,7 @@ class Inpainter:
             object_masks = torch.stack(object_masks, dim=0)
         else:
             logger.error(f"Unknown inpaint object_type: {self.object_type}")
+            raise ValueError
 
         # handarm + object mask
         inpaint_masks = torch.zeros_like(handarm_segs)

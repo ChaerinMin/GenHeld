@@ -36,10 +36,12 @@ def merge_ho(
             logger.error(
                 f"Only support one texture image for each mesh, got {len(h_aux['texture_images'])}"
             )
+            raise ValueError
         if len(o_aux["texture_images"]) > 1:
             logger.error(
                 f"Only support one texture image for each mesh, got {len(o_aux['texture_images'])}"
             )
+            raise ValueError
         _, h_H, h_W, h_C = h_aux["texture_images"]["material_0"].shape
         _, o_H, o_W, o_C = o_aux["texture_images"]["material_0"].shape
         assert h_C == o_C == 3

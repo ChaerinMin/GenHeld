@@ -4,13 +4,14 @@ defaults:
   - module/optimize_object@optimize_object: obman
   - module/reconstruct_hand@reconstruct_hand: hifihr
   - vis: visualize
+  - metric: metric
   - _self_
 
 debug: True
-test_only: False
+test_only: True
 devices: [0]
 
-resume_dir: ''
+resume_dir: '/dev/hdd/GenHeld/outputs/2024-02-13/15-15-27'
 output_dir: ???   # will be set automatically
 results_dir: ???  # will be set automatically
 ckpt_dir: ???     # will be set automatically
@@ -21,4 +22,4 @@ hydra:
   
   job_logging:
     root:
-      level: DEBUG
+      level: INFO

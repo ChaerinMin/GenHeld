@@ -24,8 +24,10 @@ class FreiHANDDataset(HandDataset):
                 fidxs.append(int(match.group(0)))
             else:
                 logger.error(f"Invalid path: {p}")
+                raise FileNotFoundError
         if len(fidxs) == 0:
             logger.error("No hand file found")
+            raise FileNotFoundError
         fidxs = sorted(fidxs)
 
         # resume fidxs
@@ -35,7 +37,7 @@ class FreiHANDDataset(HandDataset):
         if os.path.exists(resume_fidx_path):
             with open(resume_fidx_path, "r") as f:
                 resume_fidx, end_fidx = map(int, f.read().split("\n"))
-            logger.info(f"Resuming from {resume_fidx}")
+            logger.info(f"If continue to train, will resume from {resume_fidx}")
         self.fidxs = fidxs[fidxs.index(resume_fidx):fidxs.index(end_fidx)+1]        
         self.end_fidx = end_fidx
 

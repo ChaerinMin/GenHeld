@@ -19,6 +19,7 @@ from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data.sampler import Sampler
 import trimesh
 from scipy.optimize import minimize
+import pandas as pd
 
 from dataset import HandData, _P3DFaces
 from module.optimize_object import OptimizeObject
@@ -35,7 +36,7 @@ class DiscriminateHand(Sampler):
         self.dataset = dataset
 
         # convex hull visualize path
-        self.convex_hull_dir = os.path.join(self.cfg.output_dir, "convex_hull")
+        self.convex_hull_dir = os.path.join(self.cfg.output_dir, "hand_discrimination")
         os.makedirs(self.convex_hull_dir, exist_ok=True)
 
         # accepted hands path
@@ -124,6 +125,10 @@ class ReconstructHand(LightningModule):
 
         return
 
+    def on_test_start(self):
+        self.metric_results = []
+        return 
+    
     def train_dataloader(self):
         hand_discriminator = instantiate(
             self.cfg.reconstruct_hand.discriminate_hand,
@@ -155,7 +160,7 @@ class ReconstructHand(LightningModule):
         self.hand_dataset.fidxs = test_fidxs
         self.dataloader = DataLoader(
             self.hand_dataset,
-            batch_size=self.cfg.optimize_object.hand_batch,
+            batch_size=1,
             shuffle=False,
             pin_memory=True,
         )
@@ -183,6 +188,7 @@ class ReconstructHand(LightningModule):
         image_size = images.shape[1]
         if image_size != images.shape[2]:
             logger.error("Only support square image")
+            raise ValueError
 
         # inpaint
         if inpainted_images is None:
@@ -235,6 +241,7 @@ class ReconstructHand(LightningModule):
                 )
             else:
                 logger.error("With arm, mano is not implemented. Use nimble.")
+                raise NotImplementedError
 
         # Pytorch3D renderer
         renderer = Renderer(
@@ -283,6 +290,7 @@ class ReconstructHand(LightningModule):
             max_epochs=1,
             enable_checkpointing=False,
             enable_model_summary=False,
+            default_root_dir=self.cfg.output_dir,
         )
         logger.info(f"Max global steps for object optimization: {trainer.max_steps}")
         logger.info(f"Max epochs for object optimization: {trainer.max_epochs}")
@@ -294,21 +302,17 @@ class ReconstructHand(LightningModule):
         handresult = self(batch)
 
         object_optimization = OptimizeObject(self.cfg, handresult)
-        loggers = [
-            WandbLogger(
-                project="test_object",
-                offline=self.cfg.debug,
-                save_dir=self.cfg.output_dir,
-            )
-        ]
         tester = pl.Trainer(
             devices=self.cfg.devices[0:1],
             accelerator=self.accelerator,
-            logger=loggers,
             enable_checkpointing=False,
             enable_model_summary=False,
+            default_root_dir=self.cfg.output_dir,
         )
         tester.test(object_optimization)
+
+        # metrics logging
+        self.metric_results.append(object_optimization.metric_results)
 
         return
 
@@ -323,7 +327,32 @@ class ReconstructHand(LightningModule):
 
         return
 
+    def on_test_epoch_end(self):
+        df = pd.DataFrame(self.metric_results)
 
+        # mean and std
+        mean_values = df.mean(axis=0, numeric_only=True)
+        std_values = df.std(axis=0, numeric_only=True)
+        mean_row = {}
+        std_row = {}
+        for col in df.columns:
+            if col in mean_values:
+                mean_row[col] = mean_values[col]
+                std_row[col] = std_values[col]
+            else:
+                mean_row[col] = "Avg"
+                std_row[col] = "Std"
+        mean_row = pd.DataFrame([mean_row])
+        std_row = pd.DataFrame([std_row])
+        df = pd.concat([df, mean_row, std_row], ignore_index=True)
+
+        # excel logging
+        save_excel_path = os.path.join(self.cfg.output_dir, "evaluation.xlsx")
+        df.to_excel(save_excel_path, index=False)
+        logger.info(f"Saved metrics to {save_excel_path}")
+
+        return
+    
 @dataclass
 class HandResult:
     batch_size: int

@@ -1,0 +1,35 @@
+# unit: cm, kg
+
+contact:
+  thresh: 0.5
+
+penetration:
+  vox:
+    pitch: 0.5
+  volume:
+    engine: "blender"
+
+simulation:
+  _target_: metric.simulation.MetricSimulation
+  
+  opt:
+    success_thresh: 1
+    use_gui: True
+    num_steps: 35
+    time_per_step: ${div:1,240}
+    wait_time: 0
+
+    vhacd:
+      path: "/dev/hdd/v-hacd/app/build/TestVHACD"
+      resolution: 1000
+    
+    hand:
+      friction: 3
+      restitution: 0
+    
+    object:
+      friction: 3
+      restitution: 0.5
+      mass: 1
+    
+    save_video: True 

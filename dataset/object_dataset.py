@@ -21,8 +21,10 @@ class YCBDataset(ObjectDataset):
                 self.fidxs.append(match.group(0)[:-1])
             else:
                 logger.error(f"Invalid path: {p}")
+                raise FileNotFoundError
         if len(self.fidxs) == 0:
             logger.error("No object file found")
+            raise FileNotFoundError
         self.fidxs = sorted(self.fidxs)
 
         return

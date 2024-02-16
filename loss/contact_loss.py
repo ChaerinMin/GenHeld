@@ -183,7 +183,7 @@ class ContactLoss(Module):
         if self.contact_zones == "gen":
             assert sampled_verts is not None
             assert contact_object is not None and partition_object is not None
-            _, contact_zone = contact_utils.load_contacts(
+            _, contact_zones = contact_utils.load_contacts(
                 "assets/contact_zones.pkl", display=True
             )  # palm, index, middle, ring, pinky, thumb
 
@@ -193,7 +193,7 @@ class ContactLoss(Module):
             self.hand_part = [[] for _ in range(batch_size)]
             self.obj_part = [[] for _ in range(batch_size)]
 
-            for i, zone_idxs in contact_zone.items():
+            for i, zone_idxs in contact_zones.items():
                 handpart = self.handpart_lookup[i]
                 if len(handpart) == 0:
                     continue
@@ -319,6 +319,7 @@ class ContactLoss(Module):
             "repulsion_h_masks": penetr_h_mask,
             "contact_points": results_close,
             "min_dists": minho,
+            "contact_zones": contact_zones,
         }
         metrics = {
             "max_penetr": max_penetr_depth,

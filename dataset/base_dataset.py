@@ -296,6 +296,7 @@ class HandDataset(Dataset):
         elif hand_ext == ".ply":
             if self.nimble:
                 logger.error("We only support .obj hand when nimble=True")
+                raise ValueError
             hand_verts, hand_faces = load_ply(self.hand.path % fidx)
             hand_aux = None
         else:
@@ -346,6 +347,7 @@ class ObjectDataset(Dataset):
         elif object_ext == ".ply":
             if self.nimble:
                 logger.error("We only support .obj object when nimble=True")
+                raise ValueError
             object_verts, object_faces = load_ply(self.object.path % fidx)
             object_aux = None
         else:
