@@ -66,7 +66,7 @@ def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blend
 
 class Renderer:
     def __init__(
-        self, device, image_size, intrinsics, predicted_light, use_predicted_light=False
+        self, device, image_size, intrinsics
     ):
         self.device = device
         self.aa_factor = 3
@@ -82,12 +82,7 @@ class Renderer:
             device=self.device,
         )
 
-        if use_predicted_light:
-            self.lighting = DirectionalLights(
-                direction=predicted_light["directions"], device=self.device,
-            )  # diffuse_color=predicted_light['colors'],
-        else:
-            self.lighting = PointLights(device=self.device)
+        self.lighting = PointLights(device=self.device)
 
         fxfy, cxcy = Renderer.ndc_fxfy_cxcy(intrinsics, image_size)
         self.cameras = PerspectiveCameras(focal_length=-fxfy, principal_point=cxcy, device=self.device)

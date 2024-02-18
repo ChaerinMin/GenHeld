@@ -1,8 +1,5 @@
 blend_type: "alpha_blending"  # choice: alpha_blending, poisson
 
-render: 
-  use_predicted_light: false
-
 inpaint:
   _target_: visualization.inpaint.Inpainter
   opt:
@@ -11,8 +8,8 @@ inpaint:
     mask_dilate_size: 15
     sam:
       model_type: "vit_h"
-      ckpt: "submodules/Inpaint_Anything/pretrained_models/sam_vit_h_4b8939.pth"
+      ckpt: "assets/sam/sam_vit_h_4b8939.pth"
       mask_idx: 2
     lama:
-      config_file: "submodules/Inpaint_Anything/lama/configs/prediction/default.yaml"
-      ckpt: "submodules/Inpaint_Anything/pretrained_models/big-lama"
+      config_file: "assets/lama/default.yaml"
+      ckpt: "assets/lama/big-lama"

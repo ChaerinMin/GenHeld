@@ -1,7 +1,7 @@
 import logging
 from collections import namedtuple
 from dataclasses import dataclass
-from typing import Dict, NamedTuple, Union, Any
+from typing import NamedTuple
 
 import torch
 from torch import Tensor
@@ -10,12 +10,6 @@ _P3DFaces = namedtuple(
     "_P3DFaces",
     ["verts_idx", "normals_idx", "textures_idx", "materials_idx"],
     defaults=(None,) * 4,
-)  # Python 3.7+
-
-_P3DAux = namedtuple(
-    "_P3DAux",
-    ["normals", "verts_uvs", "material_colors", "texture_images", "texture_atlas"],
-    defaults=(None,) * 5,
 )  # Python 3.7+
 
 logger = logging.getLogger(__name__)
@@ -64,8 +58,7 @@ class PaddedTensor:
 class HandData:
     fidxs: int
     images: Tensor
-    intrinsics: Tensor
-    light: Dict[str, Tensor]
+    # intrinsics: Tensor
     handarm_segs: Tensor
     object_segs: Tensor
     hand_verts: Tensor
@@ -77,7 +70,7 @@ class HandData:
     def to(self, device):
         self.handarm_segs = self.handarm_segs.to(device)
         self.object_segs = self.object_segs.to(device)
-        self.hand_verts = self.hand_verts.to(device)
+        # self.hand_verts = self.hand_verts.to(device)
         self.xyz = self.xyz.to(device)
 
         # to(device) of NamedTuple

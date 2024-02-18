@@ -2,23 +2,22 @@ import glob
 import json
 import logging
 import os
+import re
 
 from .base_dataset import HandDataset
-from typing import Dict
-import re 
 
 logger = logging.getLogger(__name__)
 
 
 class FreiHANDDataset(HandDataset):
-    def __init__(self, opt, cfg):
-        super().__init__(opt, cfg)
+    def __init__(self, opt, cfg, device):
+        super().__init__(opt, cfg, device)
 
         # fidxs
         fidxs = []
-        pattern_whole = re.compile(opt.hand.path.replace("%07d", "[0-9]{7}"))
-        pattern_part = re.compile("[0-9]{7}")
-        for p in glob.glob(opt.hand.path.replace("%07d", "*")):
+        pattern_whole = re.compile(opt.image.path.replace("%08d", "[0-9]{8}"))
+        pattern_part = re.compile("[0-9]{8}")
+        for p in glob.glob(opt.image.path.replace("%08d", "*")):
             if pattern_whole.match(p) is not None:
                 match = pattern_part.search(p)
                 fidxs.append(int(match.group(0)))

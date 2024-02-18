@@ -4,3 +4,6 @@ outputs/
 wandb/
 lightning_logs/
 tmp/
+assets/*
+data/FreiHAND
+data/YCB

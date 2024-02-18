@@ -25,6 +25,7 @@ from dataset import HandData, _P3DFaces
 from module.optimize_object import OptimizeObject
 from visualization import Renderer
 
+
 logger = logging.getLogger(__name__)
 console = Console()
 
@@ -40,7 +41,9 @@ class DiscriminateHand(Sampler):
         os.makedirs(self.convex_hull_dir, exist_ok=True)
 
         # accepted hands path
-        self.accepted_hands_path = os.path.join(self.cfg.output_dir, "accepted_hands.npy")
+        self.accepted_hands_path = os.path.join(
+            self.cfg.output_dir, "accepted_hands.npy"
+        )
         if not os.path.exists(self.accepted_hands_path):
             accepted_hands = np.zeros((len(self.dataset), 2), dtype=np.int32)
             accepted_hands[:, 0] = np.array(self.dataset.fidxs)
@@ -53,7 +56,9 @@ class DiscriminateHand(Sampler):
 
     @staticmethod
     def objective_function(center, convex_hull):
-        sdf = trimesh.proximity.signed_distance(convex_hull, [center])  # pip install rtree needed
+        sdf = trimesh.proximity.signed_distance(
+            convex_hull, [center]
+        )  # pip install rtree needed
         sdf *= -1  # make outside positive
         sdf += convex_hull.scale  # avoid negative loss
         return sdf
@@ -98,7 +103,9 @@ class DiscriminateHand(Sampler):
             inscripted_ratio = sphere.volume / mesh.volume
             success = inscripted_ratio >= self.opt.accept_thresh
             if success:
-                logger.debug(f"Accepted {data['fidxs']}. Radius: {inscripted_radius:.3f}")
+                logger.debug(
+                    f"Accepted {data['fidxs']}. Radius: {inscripted_radius:.3f}"
+                )
                 accepted_hands = np.load(self.accepted_hands_path)
                 assert accepted_hands[i, 0] == data["fidxs"]
                 accepted_hands[i, 1] = 1
@@ -106,7 +113,9 @@ class DiscriminateHand(Sampler):
                 logger.debug(f"Updated {self.accepted_hands_path}")
                 yield i
             else:
-                logger.info(f"Rejected {data['fidxs']}. Radius: {inscripted_radius:.3f}")
+                logger.info(
+                    f"Rejected {data['fidxs']}. Radius: {inscripted_radius:.3f}"
+                )
 
         return
 
@@ -120,15 +129,26 @@ class ReconstructHand(LightningModule):
         self.cfg = cfg
         self.object_optimization = object_optimization
         self.accelerator = accelerator
-        self.hand_dataset = instantiate(cfg.hand_dataset, cfg=cfg, _recursive_=False)
+        self.hand_dataset = instantiate(cfg.hand_dataset, cfg=cfg, device=self.device, _recursive_=False)
         self.inpainter = instantiate(cfg.vis.inpaint)
+
+        self.hifihr_intrinsics = torch.tensor(
+            [
+                [531.9495243872041, 0.0, 112.0],
+                [0.0, 532.2600075028636, 112.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )  # hifihr assumption
+        self.hifihr_intrinsics = self.hifihr_intrinsics.unsqueeze(0).repeat(
+            self.cfg.optimize_object.hand_batch, 1, 1
+        )
 
         return
 
     def on_test_start(self):
         self.metric_results = []
-        return 
-    
+        return
+
     def train_dataloader(self):
         hand_discriminator = instantiate(
             self.cfg.reconstruct_hand.discriminate_hand,
@@ -177,8 +197,7 @@ class ReconstructHand(LightningModule):
         inpainted_images = data.inpainted_images
         handarm_segs = data.handarm_segs
         object_segs = data.object_segs
-        intrinsics = data.intrinsics
-        light = data.light
+        # intrinsics = data.intrinsics
         hand_verts = data.hand_verts
         hand_faces = data.hand_faces
         hand_aux = data.hand_aux
@@ -196,10 +215,14 @@ class ReconstructHand(LightningModule):
                 "Removing and inpainting the hand...", spinner="monkey"
             ):
                 inpainted_images = self.inpainter(images, handarm_segs, object_segs)
-                inapinted_dir = os.path.dirname(self.hand_dataset.image.inpainted_path)
+                inapinted_dir = os.path.dirname(
+                    self.hand_dataset.cached.image.inpainted_path
+                )
                 os.makedirs(inapinted_dir, exist_ok=True)
                 for b in range(batch_size):
-                    inpainted_path = self.hand_dataset.image.inpainted_path % fidxs[b]
+                    inpainted_path = (
+                        self.hand_dataset.cached.image.inpainted_path % fidxs[b]
+                    )
                     Image.fromarray(inpainted_images[b]).save(inpainted_path)
                     logger.info(f"Saved {inpainted_path}")
         else:
@@ -244,13 +267,8 @@ class ReconstructHand(LightningModule):
                 raise NotImplementedError
 
         # Pytorch3D renderer
-        renderer = Renderer(
-            self.device,
-            image_size,
-            intrinsics,
-            light,
-            self.cfg.vis.render.use_predicted_light,
-        )
+        self.hifihr_intrinsics = self.hifihr_intrinsics.to(self.device)
+        renderer = Renderer(self.device, image_size, self.hifihr_intrinsics)
 
         # give data
         handresult = HandResult(
@@ -352,7 +370,8 @@ class ReconstructHand(LightningModule):
         logger.info(f"Saved metrics to {save_excel_path}")
 
         return
-    
+
+
 @dataclass
 class HandResult:
     batch_size: int

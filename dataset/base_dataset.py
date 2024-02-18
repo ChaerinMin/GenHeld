@@ -3,7 +3,6 @@ import logging
 import os
 import pickle
 import random
-import json
 
 import cv2
 import numpy as np
@@ -12,9 +11,12 @@ from PIL import Image
 from pytorch3d.io import load_obj, load_ply
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
 from torch.utils.data import Dataset
+
 from dataset import _P3DFaces
 from submodules.NIMBLE_model.utils import vertices2landmarks
-
+from submodules.HiFiHR.models_res_nimble import Model as HiFiHRModel
+from submodules.HiFiHR.utils.train_utils import load_hifihr
+from submodules.HiFiHR.utils.NIMBLE_model.utils import save_hifihr_mesh
 
 NIMBLE_N_VERTS = 5990
 ROOT_JOINT_IDX = 9
@@ -23,17 +25,39 @@ logger = logging.getLogger(__name__)
 
 
 class HandDataset(Dataset):
-    def __init__(self, opt, cfg) -> None:
+    def __init__(self, opt, cfg, device) -> None:
         self.cfg = cfg
+        self.device=device
         self.image = opt.image
         self.hand = opt.hand
+        self.cached = opt.cached
 
-        if torch.cuda.is_available():
-            device = torch.device("cuda:0")
-        else:
-            device = torch.device("cpu")
-            logger.warning("CPU only, this will be slow!")
+        # if torch.cuda.is_available():
+        #     device = torch.device("cuda:0")
+        # else:
+        #     device = torch.device("cpu")
+        #     logger.warning("CPU only, this will be slow!")
 
+        # hifihr
+        hand_type = "nimble" if self.hand.nimble else "mano"
+        self.hifihr_model = HiFiHRModel(
+            ifRender=False,
+            device=self.device,
+            if_4c=False,
+            hand_model=hand_type,
+            use_mean_shape=False,
+            pretrain="effb3",
+            root_id=9,
+            root_id_nimble=11,
+            ifLight=True,
+        )
+        self.hifihr_model.to(device)
+        self.hifihr_model = load_hifihr(
+            self.device, self.hifihr_model, self.hand.hifihr_pretrained
+        )
+        self.hifihr_model.eval()
+
+        # mano
         self.mano_f = torch.from_numpy(
             pickle.load(open(self.hand.mano_model, "rb"), encoding="latin1")[
                 "f"
@@ -55,8 +79,7 @@ class HandDataset(Dataset):
         self.smplx_joint_idx = self.smplx_model["joint2num"].tolist()
         v_template = self.smplx_model["v_template"]
         J_regressor = self.smplx_model["J_regressor"]
-        self.smplx_joints = torch.from_numpy(J_regressor @ v_template).to(device)
-        # batch_joint_transform(rot=,joints=self.smplx_joints,parent=self.smplx_model["kintree_table"][0])
+        self.smplx_joints = torch.from_numpy(J_regressor @ v_template).to(self.device)
         with open(opt.hand.smplx_arm_corr, "rb") as f:
             self.smplx_arm_corr = pickle.load(f)
 
@@ -65,7 +88,7 @@ class HandDataset(Dataset):
             self.mano_a_verts,
             self.nimble_ha_verts_idx,
             self.mano_num_a_faces,
-        ) = self.nimblearm(device)
+        ) = self.nimblearm(self.device)
 
         return
 
@@ -269,48 +292,55 @@ class HandDataset(Dataset):
         image = torch.from_numpy(
             cv2.cvtColor(cv2.imread(self.image.path % fidx), cv2.COLOR_BGR2RGB)
         )
-        if os.path.exists(self.image.inpainted_path % fidx):
+        if os.path.exists(self.cached.image.inpainted_path % fidx):
             inpainted_image = torch.from_numpy(
                 cv2.cvtColor(
-                    cv2.imread(self.image.inpainted_path % fidx), cv2.COLOR_BGR2RGB
+                    cv2.imread(self.cached.image.inpainted_path % fidx),
+                    cv2.COLOR_BGR2RGB,
                 )
             )
         else:
             inpainted_image = None
-        intrinsics = torch.from_numpy(np.load(self.image.intrinsics % fidx))
-        light = torch.load(self.image.light % fidx)
+        # intrinsics = torch.from_numpy(np.load(self.image.intrinsics % fidx))
         handarm_seg = torch.from_numpy(
-            np.array(Image.open(self.image.handarm_seg % fidx))
+            np.array(Image.open(self.cached.image.handarm_seg % fidx))
         )
         object_seg = torch.from_numpy(
-            np.array(Image.open(self.image.object_seg % fidx))
+            np.array(Image.open(self.cached.image.object_seg % fidx))
         )
 
-        # hand
-        hand_ext = os.path.splitext(self.hand.path % fidx)[1]
-        if hand_ext == ".obj":
-            load_textures = True if self.nimble else False
-            hand_verts, hand_faces, hand_aux = load_obj(
-                self.hand.path % fidx, load_textures=load_textures
-            )
-        elif hand_ext == ".ply":
-            if self.nimble:
-                logger.error("We only support .obj hand when nimble=True")
-                raise ValueError
-            hand_verts, hand_faces = load_ply(self.hand.path % fidx)
-            hand_aux = None
-        else:
-            raise ValueError(f"hand file extension {hand_ext} not supported")
-        with open(self.hand.xyz, "r") as f:
-            xyz = json.load(f)[fidx]
-        xyz = torch.tensor(xyz)
+        # image -> hand mesh
+        if not os.path.exists(self.cached.hand.path % fidx) or not os.path.exists(self.cached.hand.xyz % fidx):
+            image_hifihr = image.permute(2, 0, 1).unsqueeze(0).to(self.device).to(
+                torch.float32
+            ) / 255.0
+            output = self.hifihr_model("FreiHand", mode_train=False, images=image_hifihr) 
+            hand_mesh = output["skin_meshes"]
+            hand_textures = output["textures"]
+            xyz = output["xyz"]
+
+            # save
+            hand_save_path = self.cached.hand.path % fidx
+            xyz_save_path = self.cached.hand.xyz % fidx
+            hand_mesh = hand_mesh.verts_padded()[0].detach().cpu().numpy()
+            hand_textures = hand_textures[0].detach().cpu().numpy()
+            xyz = xyz[0].detach().cpu().numpy()
+            save_hifihr_mesh(hand_save_path, xyz_save_path, self.hand.nimble_tex_fuv, hand_mesh, hand_textures, xyz)
+            logger.info(f"Saved HiFiHR hand mesh to {hand_save_path}")
+            logger.info(f"Saved HiFiHR predicted xyz to {xyz_save_path}")
+
+        # hand mesh
+        hand_verts, hand_faces, hand_aux = load_obj(
+            self.cached.hand.path % fidx, load_textures=True
+        )
+        # keypoints
+        xyz = np.load(self.cached.hand.xyz % fidx)
 
         return_dict = dict(
             fidxs=fidx,
             images=image,
             object_segs=object_seg,
-            intrinsics=intrinsics,
-            light=light,
+            # intrinsics=intrinsics,
             handarm_segs=handarm_seg,
             hand_verts=hand_verts,
             hand_faces=hand_faces,
@@ -354,9 +384,7 @@ class ObjectDataset(Dataset):
             raise ValueError(f"object file extension {object_ext} not supported")
 
         return_dict = dict(
-            fidx=fidx,
-            object_verts=object_verts,
-            object_faces=object_faces
+            fidx=fidx, object_verts=object_verts, object_faces=object_faces
         )
 
         # add only if not None
@@ -389,4 +417,3 @@ class ObjectDataset(Dataset):
             return_dict["partitions"] = partitions
 
         return return_dict
-    

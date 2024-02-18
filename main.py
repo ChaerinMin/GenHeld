@@ -16,7 +16,7 @@ from configs.compare_configs import compare_cfg
 torch.set_float32_matmul_precision("medium")
 
 logger = logging.getLogger(__name__)
-logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
 warnings.filterwarnings("ignore")
 OmegaConf.register_resolver("div", lambda x, y: float(x) / float(y))
 

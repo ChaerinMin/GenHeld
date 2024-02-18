@@ -8,10 +8,10 @@ defaults:
   - _self_
 
 debug: True
-test_only: True
+test_only: False
 devices: [0]
 
-resume_dir: '/dev/hdd/GenHeld/outputs/2024-02-13/15-15-27'
+resume_dir: ''
 output_dir: ???   # will be set automatically
 results_dir: ???  # will be set automatically
 ckpt_dir: ???     # will be set automatically
