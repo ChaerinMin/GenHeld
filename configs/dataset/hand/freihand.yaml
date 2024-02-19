@@ -18,9 +18,8 @@ opt:
   cached:
     image:
       inpainted_path: "data/FreiHAND/evaluation/inpainted/%08d.jpg"
-      # intrinsics: "/dev/hdd/HiFiHR/outputs/freihand/evaluation_final/obj/test/demo_eval_0560_%07d_Ks.npy"
-      handarm_seg: "data/FreiHAND/evaluation/pred_twohands/%08d.png" 
-      object_seg: "data/FreiHAND/evaluation/pred_obj1/%08d.png"
+      # handarm_seg: "data/FreiHAND/evaluation/egohos_handarm/%08d.png" 
+      # object_seg: "data/FreiHAND/evaluation/egohos_obj/%08d.png"
     hand:
       path: "data/FreiHAND/evaluation/hifihr_obj/%07d.obj"
-      xyz: "data/FreiHAND/evaluation/hifihr_obj/%07d_pred_xyz.npy"  #"data/FreiHAND/evaluation_xyz.json"
+      xyz: "data/FreiHAND/evaluation/hifihr_obj/%07d_pred_xyz.npy"  

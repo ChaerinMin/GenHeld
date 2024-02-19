@@ -7,7 +7,6 @@ import random
 import cv2
 import numpy as np
 import torch
-from PIL import Image
 from pytorch3d.io import load_obj, load_ply
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
 from torch.utils.data import Dataset
@@ -31,12 +30,6 @@ class HandDataset(Dataset):
         self.image = opt.image
         self.hand = opt.hand
         self.cached = opt.cached
-
-        # if torch.cuda.is_available():
-        #     device = torch.device("cuda:0")
-        # else:
-        #     device = torch.device("cpu")
-        #     logger.warning("CPU only, this will be slow!")
 
         # hifihr
         hand_type = "nimble" if self.hand.nimble else "mano"
@@ -301,13 +294,12 @@ class HandDataset(Dataset):
             )
         else:
             inpainted_image = None
-        # intrinsics = torch.from_numpy(np.load(self.image.intrinsics % fidx))
-        handarm_seg = torch.from_numpy(
-            np.array(Image.open(self.cached.image.handarm_seg % fidx))
-        )
-        object_seg = torch.from_numpy(
-            np.array(Image.open(self.cached.image.object_seg % fidx))
-        )
+        # handarm_seg = torch.from_numpy(
+        #     np.array(Image.open(self.cached.image.handarm_seg % fidx))
+        # )
+        # object_seg = torch.from_numpy(
+        #     np.array(Image.open(self.cached.image.object_seg % fidx))
+        # )
 
         # image -> hand mesh
         if not os.path.exists(self.cached.hand.path % fidx) or not os.path.exists(self.cached.hand.xyz % fidx):
@@ -339,9 +331,8 @@ class HandDataset(Dataset):
         return_dict = dict(
             fidxs=fidx,
             images=image,
-            object_segs=object_seg,
-            # intrinsics=intrinsics,
-            handarm_segs=handarm_seg,
+            # object_segs=object_seg,
+            # handarm_segs=handarm_seg,
             hand_verts=hand_verts,
             hand_faces=hand_faces,
             xyz=xyz

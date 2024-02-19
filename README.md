@@ -18,6 +18,8 @@ This code was implemented under `Ubuntu 22.04`, `NVIDIA RTX 4060 Ti`, `cuda 11.8
     ```bash
     conda install -c fvcore -c iopath -c conda-forge fvcore iopath
     pip install -r requirements.txt
+    pip install -U openmim
+    mim install mmcv-full==1.7.2
     ```
 
 3. V-HACD
@@ -60,7 +62,7 @@ GenHeld
 |-- ...
 ```
 
-For reference, find [MANO](https://mano.is.tue.mpg.de/), [NIMBLE](https://github.com/reyuwei/NIMBLE_model?tab=readme-ov-file), [SMPLX](https://smpl-x.is.tue.mpg.de/), [SAM](https://github.com/facebookresearch/segment-anything), [LAMA](https://github.com/advimman/lama), and [HiFiHR](https://github.com/viridityzhu/HiFiHR/tree/main?tab=readme-ov-file). We adopted the contact_zones.pkl from [Obman](https://github.com/hassony2/obman_train/tree/master), and preprocessed SMPLX arms from [HARP](https://github.com/korrawe/harp). 
+For reference, find [MANO](https://mano.is.tue.mpg.de/), [NIMBLE](https://github.com/reyuwei/NIMBLE_model?tab=readme-ov-file), [SMPLX](https://smpl-x.is.tue.mpg.de/), [SAM](https://github.com/facebookresearch/segment-anything), [LAMA](https://github.com/advimman/lama), [EgoHOS](https://github.com/owenzlz/EgoHOS) and [HiFiHR](https://github.com/viridityzhu/HiFiHR/tree/main?tab=readme-ov-file). We adopted the contact_zones.pkl from [Obman](https://github.com/hassony2/obman_train/tree/master), and preprocessed SMPLX arms from [HARP](https://github.com/korrawe/harp). 
     
 ## Hands
 

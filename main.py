@@ -62,12 +62,14 @@ def main(cfg):
     # accelerator
     if torch.cuda.is_available():
         accelerator = "gpu"
+        device = "cuda"
     else:
         accelerator = "cpu"
+        device = "cpu"
         logger.warning("CPU only, this will be slow!")
 
     # main
-    reconstruction = ReconstructHand(cfg, accelerator)
+    reconstruction = ReconstructHand(cfg, accelerator, device)
     reconstructor = pl.Trainer(
         devices=cfg.devices,
         accelerator=accelerator,

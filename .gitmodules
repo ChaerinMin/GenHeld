@@ -7,3 +7,6 @@
 [submodule "submodules/HiFiHR"]
 	path = submodules/HiFiHR
 	url = https://github.com/ChaerinMin/HiFiHR.git
+[submodule "submodules/EgoHOS"]
+	path = submodules/EgoHOS
+	url = https://github.com/ChaerinMin/EgoHOS.git

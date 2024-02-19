@@ -3,6 +3,18 @@ blend_type: "alpha_blending"  # choice: alpha_blending, poisson
 inpaint:
   _target_: visualization.inpaint.Inpainter
   opt:
+    cached:
+      handarm_seg: "data/FreiHAND/evaluation/egohos_handarm/%08d.png" 
+      object_seg: "data/FreiHAND/evaluation/egohos_object/%08d.png"
+
+    egohos:
+      hand_config: "assets/egohos/seg_twohands_ccda/seg_twohands_ccda.py" 
+      hand_ckpt: "assets/egohos/seg_twohands_ccda/best_mIoU_iter_56000.pth"
+      cb_config: "assets/egohos/twohands_to_cb_ccda/twohands_to_cb_ccda.py"
+      cb_ckpt: "assets/egohos/twohands_to_cb_ccda/best_mIoU_iter_76000.pth"
+      object_config: "assets/egohos/twohands_cb_to_obj1_ccda/twohands_cb_to_obj1_ccda.py"
+      object_ckpt: "assets/egohos/twohands_cb_to_obj1_ccda/best_mIoU_iter_34000.pth"
+
     hand_type: "mask" # choice: point, mask
     object_type: "point"  # choice: point, mask
     mask_dilate_size: 15
@@ -10,6 +22,7 @@ inpaint:
       model_type: "vit_h"
       ckpt: "assets/sam/sam_vit_h_4b8939.pth"
       mask_idx: 2
+
     lama:
       config_file: "assets/lama/default.yaml"
       ckpt: "assets/lama/big-lama"

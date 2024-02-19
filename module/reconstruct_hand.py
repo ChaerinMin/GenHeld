@@ -124,13 +124,13 @@ class DiscriminateHand(Sampler):
 
 
 class ReconstructHand(LightningModule):
-    def __init__(self, cfg, accelerator, object_optimization=None):
+    def __init__(self, cfg, accelerator, device, object_optimization=None):
         super().__init__()
         self.cfg = cfg
         self.object_optimization = object_optimization
         self.accelerator = accelerator
-        self.hand_dataset = instantiate(cfg.hand_dataset, cfg=cfg, device=self.device, _recursive_=False)
-        self.inpainter = instantiate(cfg.vis.inpaint)
+        self.hand_dataset = instantiate(cfg.hand_dataset, cfg=cfg, device=device, _recursive_=False)
+        self.inpainter = instantiate(cfg.vis.inpaint, device=device, _recursive_=False)
 
         self.hifihr_intrinsics = torch.tensor(
             [
@@ -195,9 +195,8 @@ class ReconstructHand(LightningModule):
         fidxs = data.fidxs
         images = data.images.cpu().numpy()
         inpainted_images = data.inpainted_images
-        handarm_segs = data.handarm_segs
-        object_segs = data.object_segs
-        # intrinsics = data.intrinsics
+        # handarm_segs = data.handarm_segs
+        # object_segs = data.object_segs
         hand_verts = data.hand_verts
         hand_faces = data.hand_faces
         hand_aux = data.hand_aux
@@ -214,7 +213,7 @@ class ReconstructHand(LightningModule):
             with console.status(
                 "Removing and inpainting the hand...", spinner="monkey"
             ):
-                inpainted_images = self.inpainter(images, handarm_segs, object_segs)
+                inpainted_images = self.inpainter(images, fidxs)  
                 inapinted_dir = os.path.dirname(
                     self.hand_dataset.cached.image.inpainted_path
                 )

@@ -58,9 +58,8 @@ class PaddedTensor:
 class HandData:
     fidxs: int
     images: Tensor
-    # intrinsics: Tensor
-    handarm_segs: Tensor
-    object_segs: Tensor
+    # handarm_segs: Tensor
+    # object_segs: Tensor
     hand_verts: Tensor
     hand_faces: NamedTuple
     xyz: Tensor = None
@@ -68,9 +67,9 @@ class HandData:
     hand_aux: NamedTuple = None
 
     def to(self, device):
-        self.handarm_segs = self.handarm_segs.to(device)
-        self.object_segs = self.object_segs.to(device)
-        # self.hand_verts = self.hand_verts.to(device)
+        # self.handarm_segs = self.handarm_segs.to(device)
+        # self.object_segs = self.object_segs.to(device)
+        self.hand_verts = self.hand_verts.to(device)
         self.xyz = self.xyz.to(device)
 
         # to(device) of NamedTuple
