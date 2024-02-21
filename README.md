@@ -10,7 +10,7 @@ This code was implemented under `Ubuntu 22.04`, `NVIDIA RTX 4060 Ti`, `cuda 11.8
     ```bash
     conda create -n genheld python=3.8.18
     conda activate genheld
-    pip instll torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 --index-url https://download.pytorch.org/whl/cu118
+    pip install torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 --index-url https://download.pytorch.org/whl/cu118
     ```
 
 2. Install packages 
@@ -24,7 +24,7 @@ This code was implemented under `Ubuntu 22.04`, `NVIDIA RTX 4060 Ti`, `cuda 11.8
 
 3. V-HACD
 
-   Install [v-hacd](https://github.com/kmammou/v-hacd) and change `/dev/hdd/v-hacd/app/build/TestVHACD` to your own path at [configs/metric/metric.yaml](configs/metric/metric.yaml).
+   Install [v-hacd](https://github.com/kmammou/v-hacd) and change `/home/cmin5/v-hacd/app/build/TestVHACD` to your own path at [configs/metric/metric.yaml](configs/metric/metric.yaml).
 
 4. Blender
 
@@ -72,9 +72,10 @@ Run the following code to download FreiHAND.
 
 ```bash
 cd <your storage>
+mkdir FreiHAND
+cd FreiHAND
 wget https://lmb.informatik.uni-freiburg.de/data/freihand/FreiHAND_pub_v2.zip  # 3.7GB
-unzip FreiHAND_pub_v2.zip  # 12.4GB
-mv FreiHAND_pub_v2 FreiHAND
+unzip FreiHAND_pub_v2.zip  # 4.6GB
 rm FreiHAND_pub_v2.zip
 cd <GenHeld>
 ln -s <abs path to FreiHAND> data/
@@ -100,7 +101,7 @@ GenHeld
 Run the following code to download YCB.
 
 ```bash
-python data/download_ycb.py -download_dir <your storage>
+python data/download_ycb.py --download_dir <your storage>
 ln -s <abs path to YCB> data/
 ```
 

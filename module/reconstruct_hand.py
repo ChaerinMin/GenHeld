@@ -290,7 +290,8 @@ class ReconstructHand(LightningModule):
         handresult = self(batch)
 
         # optimize
-        object_optimization = OptimizeObject(self.cfg, handresult)
+        object_optimization = OptimizeObject(self.cfg, self.device, handresult)
+        print("optimizer initialized")
         callbacks = [LearningRateMonitor(logging_interval="step")]
         loggers = [
             WandbLogger(
@@ -300,7 +301,7 @@ class ReconstructHand(LightningModule):
             )
         ]
         trainer = pl.Trainer(
-            devices=self.cfg.devices,
+            devices=len(self.cfg.devices),
             accelerator=self.accelerator,
             callbacks=callbacks,
             logger=loggers,

@@ -33,9 +33,10 @@ logger = logging.getLogger(__name__)
 
 
 class OptimizeObject(LightningModule):
-    def __init__(self, cfg, handresult):
+    def __init__(self, cfg, device, handresult):
         super().__init__()
         self.cfg = cfg
+        self.device_manual = device
         self.opt = cfg.optimize_object
         self.handresult = handresult
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
@@ -51,23 +52,23 @@ class OptimizeObject(LightningModule):
         # parameters
         self.s_params = nn.Parameter(
             torch.ones(
-                self.handresult.batch_size, requires_grad=True, device=self.device
+                self.handresult.batch_size, requires_grad=True, device=self.device_manual
             )
         )
         self.t_params = nn.Parameter(
             torch.zeros(
-                self.handresult.batch_size, 3, requires_grad=True, device=self.device
+                self.handresult.batch_size, 3, requires_grad=True, device=self.device_manual
             )
         )
         self.R_params = nn.Parameter(
             torch.zeros(
-                self.handresult.batch_size, 3, requires_grad=True, device=self.device
+                self.handresult.batch_size, 3, requires_grad=True, device=self.device_manual
             )
         )
 
         # monitoring
         self.min_losses = (
-            torch.ones(self.handresult.batch_size, device=self.device) * 1e10
+            torch.ones(self.handresult.batch_size, device=self.device_manual) * 1e10
         )
 
         return
@@ -77,7 +78,7 @@ class OptimizeObject(LightningModule):
         for data in self.object_dataloader:
             data = ObjectData(**data)
             break
-        data = data.to(self.device)
+        data = data.to(self.device_manual)
         self.object_fidx = data.fidx
         self.object_verts = data.object_verts
         self.object_faces = data.object_faces
@@ -127,14 +128,14 @@ class OptimizeObject(LightningModule):
                 self.s_params[b] = torch.tensor(state_dict["s_params"])
                 self.t_params[b] = torch.tensor(state_dict["t_params"])
                 self.R_params[b] = torch.tensor(state_dict["R_params"])
-        self.s_params = self.s_params.to(self.device)
-        self.t_params = self.t_params.to(self.device)
-        self.R_params = self.R_params.to(self.device)
+        self.s_params = self.s_params.to(self.device_manual)
+        self.t_params = self.t_params.to(self.device_manual)
+        self.R_params = self.R_params.to(self.device_manual)
 
         # load object data
         test_batch = ObjectData.collate_fn(test_batch)
         data = ObjectData(**test_batch)
-        data = data.to(self.device)
+        data = data.to(self.device_manual)
         self.object_fidx = data.fidx
         self.object_verts = data.object_verts
         self.object_faces = data.object_faces
@@ -186,7 +187,7 @@ class OptimizeObject(LightningModule):
         return optimizer
 
     def on_after_batch_transfer(self, batch, dataloader_idx):
-        self.min_losses = self.min_losses.to(self.device)
+        self.min_losses = self.min_losses.to(self.device_manual)
         return batch
 
     def forward(self, batch, batch_idx):
@@ -196,7 +197,7 @@ class OptimizeObject(LightningModule):
         s_sigmoid = torch.sigmoid(self.s_params) * 3.0 - 1.5
         R_matrix = axis_angle_to_matrix(self.R_params)
         t = (
-            Transform3d(device=self.device)
+            Transform3d(device=self.device_manual)
             .scale(s_sigmoid)
             .rotate(R_matrix)
             .translate(self.t_params)
@@ -368,34 +369,129 @@ class OptimizeObject(LightningModule):
 
     def on_before_optimizer_step(self, optimizer):
         # save checkpoint
-        update_mask = self.current_losses < self.min_losses
-        self.min_losses[update_mask] = self.current_losses[update_mask]
-        for b in range(self.handresult.batch_size):
-            if update_mask[b]:
-                out_ckpt_path = os.path.join(
-                    self.cfg.ckpt_dir,
-                    "hand_{:08d}_object_{}_best.json".format(
-                        self.handresult.fidxs[b], self.object_fidx[b]
-                    ),
-                )
-                checkpoint = {
-                    "state_dict": {
-                        "s_params": self.s_params[b].item(),
-                        "t_params": self.t_params[b].tolist(),
-                        "R_params": self.R_params[b].tolist(),
-                    },
-                    "metadata": {
-                        "iter": self.batch_idx,
-                    },
-                }
-                with open(out_ckpt_path, "w") as f:
-                    json.dump(checkpoint, f)
-        self.update_mask = update_mask
+        if self.batch_idx > self.opt.plot.tolerance_step: 
+            update_mask = self.current_losses < (self.min_losses - self.opt.plot.tolerance_difference)
+            self.min_losses[update_mask] = self.current_losses[update_mask]
+            for b in range(self.handresult.batch_size):
+                if update_mask[b]:
+                    out_ckpt_path = os.path.join(
+                        self.cfg.ckpt_dir,
+                        "hand_{:08d}_object_{}_best.json".format(
+                            self.handresult.fidxs[b], self.object_fidx[b]
+                        ),
+                    )
+                    checkpoint = {
+                        "state_dict": {
+                            "s_params": self.s_params[b].item(),
+                            "t_params": self.t_params[b].tolist(),
+                            "R_params": self.R_params[b].tolist(),
+                        },
+                        "metadata": {
+                            "iter": self.batch_idx,
+                        },
+                    }
+                    with open(out_ckpt_path, "w") as f:
+                        json.dump(checkpoint, f)
+            self.update_mask = update_mask
         return
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
         batch_size = self.handresult.batch_size
         new_object_verts = outputs["new_object_verts"]
+
+        if batch_idx > self.opt.plot.tolerance_step:
+            # save mesh
+            merged_meshes = None
+            if self.update_mask.any() or batch_idx % self.opt.plot.mesh_period == 0:
+                is_textured = self.handresult.dataset.nimble
+                object_aligned_verts = PaddedTensor.from_padded(
+                    new_object_verts.padded.detach(), new_object_verts.split_sizes
+                )
+                object_aligned_verts.padded = (
+                    object_aligned_verts.padded * self.handresult.max_norm[:, None, None]
+                ) + self.handresult.center
+                for b in range(batch_size):
+                    object_aligned_verts.padded[b, new_object_verts.split_sizes[b] :] = 0.0
+                merged_meshes = merge_ho(
+                    is_textured,
+                    self.handresult.original_verts,
+                    self.handresult.original_faces,
+                    self.handresult.aux,
+                    object_aligned_verts,
+                    self.object_faces,
+                    self.object_aux,
+                )
+                p3d_io = IO()
+                for b in range(batch_size):
+                    if self.update_mask[b] or batch_idx % self.opt.plot.mesh_period == 0:
+                        if self.update_mask[b]:
+                            tag = "best"
+                        else:
+                            tag = f"iter_{batch_idx:05d}"
+                        out_obj_path = os.path.join(
+                            self.cfg.results_dir,
+                            "hand_{}_object_{}_{}.obj".format(
+                                self.handresult.fidxs[b], self.object_fidx[b], tag
+                            ),
+                        )  # assume object batch size is 1
+                        p3d_io.save_mesh(
+                            merged_meshes[b], out_obj_path, include_textures=is_textured
+                        )
+                        logger.info(f"Saved {out_obj_path}")
+
+            # render hand
+            if self.update_mask.any() or batch_idx % self.opt.plot.render_period == 0:
+                if merged_meshes is None:
+                    is_textured = self.handresult.dataset.nimble
+                    object_aligned_verts = new_object_verts.padded.detach()
+                    object_aligned_verts = (
+                        object_aligned_verts * self.handresult.max_norm
+                    ) + self.handresult.center
+                    for b in range(batch_size):
+                        object_aligned_verts[b, new_object_verts.split_sizes[b] :] = 0.0
+                    merged_meshes = merge_ho(
+                        is_textured,
+                        self.handresult.original_verts,
+                        self.handresult.original_faces,
+                        self.handresult.aux,
+                        object_aligned_verts,
+                        self.object_faces,
+                        self.object_aux,
+                    )
+
+                merged_meshes.verts_normals_packed()
+                rendered_images = self.handresult.renderer.render(merged_meshes)
+                rendered_images = (rendered_images * 255).cpu().numpy().astype(np.uint8)
+                for b in range(batch_size):
+                    if self.update_mask[b] or batch_idx % self.opt.plot.mesh_period == 0:
+                        if self.update_mask[b]:
+                            tag = "best"
+                        else:
+                            tag = f"iter_{batch_idx:05d}"
+                        # save rendered hand
+                        out_rendered_path = os.path.join(
+                            self.cfg.results_dir,
+                            "hand_{}_object_{}_{}_rendering.png".format(
+                                self.handresult.fidxs[b], self.object_fidx[b], tag
+                            ),
+                        )  # assume object batch size is 1
+                        Image.fromarray(rendered_images[b]).save(out_rendered_path)
+                        logger.info(f"Saved {out_rendered_path}")
+
+                        # original image + rendered hand
+                        blended_image = blend_images(
+                            rendered_images[b],
+                            self.handresult.inpainted_images[b],
+                            blend_type=self.cfg.vis.blend_type,
+                        )
+                        out_blended_path = os.path.join(
+                            self.cfg.results_dir,
+                            "hand_{}_object_{}_{}_blended.png".format(
+                                self.handresult.fidxs[b], self.object_fidx[b], tag
+                            ),
+                        )  # assume object batch size is 1
+                        Image.fromarray(blended_image).save(out_blended_path)
+                        logger.info(f"Saved {out_blended_path}")
 
         # plot point cloud
         if batch_idx % self.opt.plot.pc_period == self.opt.plot.pc_period - 1:
@@ -411,99 +507,6 @@ class OptimizeObject(LightningModule):
                 plot_pointcloud(
                     verts, title=f"hand: {self.handresult.fidxs[b]}, iter: {batch_idx}"
                 )
-
-        # save mesh
-        merged_meshes = None
-        if self.update_mask.any() or batch_idx % self.opt.plot.mesh_period == 0:
-            is_textured = self.handresult.dataset.nimble
-            object_aligned_verts = PaddedTensor.from_padded(
-                new_object_verts.padded.detach(), new_object_verts.split_sizes
-            )
-            object_aligned_verts.padded = (
-                object_aligned_verts.padded * self.handresult.max_norm[:, None, None]
-            ) + self.handresult.center
-            for b in range(batch_size):
-                object_aligned_verts.padded[b, new_object_verts.split_sizes[b] :] = 0.0
-            merged_meshes = merge_ho(
-                is_textured,
-                self.handresult.original_verts,
-                self.handresult.original_faces,
-                self.handresult.aux,
-                object_aligned_verts,
-                self.object_faces,
-                self.object_aux,
-            )
-            p3d_io = IO()
-            for b in range(batch_size):
-                if self.update_mask[b] or batch_idx % self.opt.plot.mesh_period == 0:
-                    if self.update_mask[b]:
-                        tag = "best"
-                    else:
-                        tag = f"iter_{batch_idx:05d}"
-                    out_obj_path = os.path.join(
-                        self.cfg.results_dir,
-                        "hand_{}_object_{}_{}.obj".format(
-                            self.handresult.fidxs[b], self.object_fidx[b], tag
-                        ),
-                    )  # assume object batch size is 1
-                    p3d_io.save_mesh(
-                        merged_meshes[b], out_obj_path, include_textures=is_textured
-                    )
-                    logger.info(f"Saved {out_obj_path}")
-
-        # render hand
-        if self.update_mask.any() or batch_idx % self.opt.plot.render_period == 0:
-            if merged_meshes is None:
-                is_textured = self.handresult.dataset.nimble
-                object_aligned_verts = new_object_verts.padded.detach()
-                object_aligned_verts = (
-                    object_aligned_verts * self.handresult.max_norm
-                ) + self.handresult.center
-                for b in range(batch_size):
-                    object_aligned_verts[b, new_object_verts.split_sizes[b] :] = 0.0
-                merged_meshes = merge_ho(
-                    is_textured,
-                    self.handresult.original_verts,
-                    self.handresult.original_faces,
-                    self.handresult.aux,
-                    object_aligned_verts,
-                    self.object_faces,
-                    self.object_aux,
-                )
-
-            merged_meshes.verts_normals_packed()
-            rendered_images = self.handresult.renderer.render(merged_meshes)
-            rendered_images = (rendered_images * 255).cpu().numpy().astype(np.uint8)
-            for b in range(batch_size):
-                if self.update_mask[b] or batch_idx % self.opt.plot.mesh_period == 0:
-                    if self.update_mask[b]:
-                        tag = "best"
-                    else:
-                        tag = f"iter_{batch_idx:05d}"
-                    # save rendered hand
-                    out_rendered_path = os.path.join(
-                        self.cfg.results_dir,
-                        "hand_{}_object_{}_{}_rendering.png".format(
-                            self.handresult.fidxs[b], self.object_fidx[b], tag
-                        ),
-                    )  # assume object batch size is 1
-                    Image.fromarray(rendered_images[b]).save(out_rendered_path)
-                    logger.info(f"Saved {out_rendered_path}")
-
-                    # original image + rendered hand
-                    blended_image = blend_images(
-                        rendered_images[b],
-                        self.handresult.inpainted_images[b],
-                        blend_type=self.cfg.vis.blend_type,
-                    )
-                    out_blended_path = os.path.join(
-                        self.cfg.results_dir,
-                        "hand_{}_object_{}_{}_blended.png".format(
-                            self.handresult.fidxs[b], self.object_fidx[b], tag
-                        ),
-                    )  # assume object batch size is 1
-                    Image.fromarray(blended_image).save(out_blended_path)
-                    logger.info(f"Saved {out_blended_path}")
 
         # save contact point cloud
         if batch_idx % self.opt.plot.contact_period == 0:

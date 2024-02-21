@@ -1,8 +1,10 @@
-Niters: 1
+Niters: 1000
 lr: 0.1
-hand_batch: 4
+hand_batch: 10
 
 plot:
+  tolerance_step: 200
+  tolerance_difference: 0.0005
   mesh_period: 10000
   render_period: 10000
   pc_period: 1000000

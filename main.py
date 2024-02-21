@@ -16,7 +16,7 @@ from configs.compare_configs import compare_cfg
 torch.set_float32_matmul_precision("medium")
 
 logger = logging.getLogger(__name__)
-logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
+logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore")
 OmegaConf.register_resolver("div", lambda x, y: float(x) / float(y))
 
@@ -34,6 +34,7 @@ pl.seed_everything(random_seed, workers=True)
 @hydra.main(version_base=None, config_path="./configs", config_name="config")
 def main(cfg):
     logger.info(f"System timezone is {time.strftime('%Z')}")
+    logger.warning(f"Number of devices: {torch.cuda.device_count()}")
 
     # paths
     if cfg.resume_dir:
@@ -71,7 +72,7 @@ def main(cfg):
     # main
     reconstruction = ReconstructHand(cfg, accelerator, device)
     reconstructor = pl.Trainer(
-        devices=cfg.devices,
+        devices=len(cfg.devices),
         accelerator=accelerator,
         max_epochs=1,
         enable_checkpointing=False,

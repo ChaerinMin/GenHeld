@@ -20,7 +20,7 @@ simulation:
     wait_time: 0
 
     vhacd:
-      path: "/dev/hdd/v-hacd/app/build/TestVHACD"
+      path: "/home/cmin5/v-hacd/app/build/TestVHACD"
       resolution: 1000
     
     hand:
