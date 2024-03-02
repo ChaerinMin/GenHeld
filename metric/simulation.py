@@ -59,7 +59,7 @@ class MetricSimulation:
         p.setPhysicsEngineParameter(
             fixedTimeStep=self.opt.time_per_step, physicsClientId=conn_id
         )
-        p.setGravity(0, 0, 9.8, physicsClientId=conn_id)
+        p.setGravity(0, 0, -9.8, physicsClientId=conn_id)
         target_pos = [0, -1, 0]
         camera_pos = [0, -1.5, 0]
         p.resetDebugVisualizerCamera(cameraDistance=0.5, cameraYaw=0, cameraPitch=0, cameraTargetPosition=target_pos)
@@ -107,7 +107,6 @@ class MetricSimulation:
         # object
         obj_tmp_fname = tempfile.mktemp(suffix=".obj", dir=base_tmp_dir)
         os.makedirs(base_tmp_dir, exist_ok=True)
-        initial_pos = np.mean(obj_verts, axis=0)
         write_obj(obj_tmp_fname, obj_verts, obj_faces)
 
         vhacd_result = vhacd(
@@ -133,10 +132,12 @@ class MetricSimulation:
         )
         obj_body_id = p.createMultiBody(
             baseMass=self.opt.object.mass,
-            basePosition=initial_pos,
             baseCollisionShapeIndex=obj_collision_id,
             baseVisualShapeIndex=obj_visual_id,
             physicsClientId=conn_id,
+        )
+        initial_pos, initial_ori = p.getBasePositionAndOrientation(
+            obj_body_id, physicsClientId=conn_id
         )
         p.changeDynamics(
             obj_body_id,
@@ -174,7 +175,7 @@ class MetricSimulation:
         final_pos, final_ori = p.getBasePositionAndOrientation(
             obj_body_id, physicsClientId=conn_id
         )
-        distance = np.linalg.norm(final_pos - initial_pos)
+        distance = np.linalg.norm(np.array(final_pos) - np.array(initial_pos))
 
         os.remove(hand_tmp_fname)
         os.remove(obj_tmp_fname)

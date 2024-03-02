@@ -129,6 +129,7 @@ class ReconstructHand(LightningModule):
         self.cfg = cfg
         self.object_optimization = object_optimization
         self.accelerator = accelerator
+        self.manual_device = device
         self.hand_dataset = instantiate(cfg.hand_dataset, cfg=cfg, device=device, _recursive_=False)
         self.inpainter = instantiate(cfg.vis.inpaint, device=device, _recursive_=False)
 
@@ -140,7 +141,7 @@ class ReconstructHand(LightningModule):
             ]
         )  # hifihr assumption
         self.hifihr_intrinsics = self.hifihr_intrinsics.unsqueeze(0).repeat(
-            self.cfg.optimize_object.hand_batch, 1, 1
+            self.cfg.batch_size, 1, 1
         )
 
         return
@@ -158,7 +159,7 @@ class ReconstructHand(LightningModule):
         )
         self.dataloader = DataLoader(
             self.hand_dataset,
-            batch_size=self.cfg.optimize_object.hand_batch,
+            batch_size=self.cfg.batch_size,
             shuffle=False,
             pin_memory=True,
             sampler=hand_discriminator,
@@ -173,7 +174,7 @@ class ReconstructHand(LightningModule):
         for ckpt in ckpts:
             match = re.search(pattern, os.path.basename(ckpt))
             if match is not None:
-                fidx = int(match.group(1)[5:])
+                fidx = int(match.group(1))
                 test_fidxs.append(fidx)
                 logger.debug(f"Checkpoint {ckpt} is included in the test")
 
@@ -319,7 +320,7 @@ class ReconstructHand(LightningModule):
     def test_step(self, batch, batch_idx):
         handresult = self(batch)
 
-        object_optimization = OptimizeObject(self.cfg, handresult)
+        object_optimization = OptimizeObject(self.cfg, self.manual_device, handresult)
         tester = pl.Trainer(
             devices=self.cfg.devices[0:1],
             accelerator=self.accelerator,

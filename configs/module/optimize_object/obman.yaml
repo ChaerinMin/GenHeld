@@ -1,6 +1,5 @@
 Niters: 1000
 lr: 0.1
-hand_batch: 10
 
 plot:
   tolerance_step: 200

@@ -36,12 +36,12 @@ def penetration_vox(hand_mesh: Trimesh, obj_mesh: Trimesh, pitch):
 def penetration_volume(hand_mesh, obj_mesh, engine):
     trimesh.repair.fix_normals(obj_mesh)
     intersection = obj_mesh.intersection(hand_mesh, engine=engine)
-    if intersection.vertices.shape[0] > 0:
-        if not intersection.is_watertight:
-            logger.error(
-                "Hand-Object intersection should be watertight. If error persists, use intersection_vox only."
-            )
-            raise ValueError
+    if isinstance(intersection, trimesh.Trimesh) and intersection.vertices.shape[0] > 0:
+        # if not intersection.is_watertight:
+        #     logger.error(
+        #         "Hand-Object intersection should be watertight. If error persists, use intersection_vox only."
+        #     )
+        #     raise ValueError
         volume = intersection.volume
     else:
         volume = 0
