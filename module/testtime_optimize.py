@@ -1,16 +1,18 @@
+import glob
 import json
 import logging
 import os
-from typing import Union
-import glob
 import re
+from typing import Union
 
 import matplotlib as mpl
 import numpy as np
+import pytorch_lightning as pl
 import torch
 from hydra.utils import instantiate
 from PIL import Image
 from pytorch3d.io import IO
+from pytorch3d.structures import Meshes
 from pytorch3d.transforms import (
     Transform3d,
     axis_angle_to_matrix,
@@ -21,23 +23,23 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from trimesh import Trimesh
 
-from dataset import DummyDataset, ObjectData, PaddedTensor
+from dataset import DummyDataset, ObjectData, PaddedTensor, SelectorTestDataset
 from loss import ContactLoss
+from metric import penetration_volume, penetration_vox
 from utils import merge_ho
 from visualization import blend_images, plot_pointcloud
-from metric import penetration_vox, penetration_volume
-
 
 mpl.rcParams["figure.dpi"] = 80
 logger = logging.getLogger(__name__)
 
 
-class OptimizeObject(LightningModule):
-    def __init__(self, cfg, device, handresult):
+class TestTimeOptimize(LightningModule):
+    def __init__(self, cfg, device, accelerator, handresult):
         super().__init__()
         self.cfg = cfg
         self.device_manual = device
-        self.opt = cfg.optimize_object
+        self.accelerator = accelerator
+        self.opt = cfg.testtime_optimize
         self.handresult = handresult
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
         self.object_dataset = instantiate(self.cfg.object_dataset)
@@ -52,17 +54,25 @@ class OptimizeObject(LightningModule):
         # parameters
         self.s_params = nn.Parameter(
             torch.ones(
-                self.handresult.batch_size, requires_grad=True, device=self.device_manual
+                self.handresult.batch_size,
+                requires_grad=True,
+                device=self.device_manual,
             )
         )
         self.t_params = nn.Parameter(
             torch.zeros(
-                self.handresult.batch_size, 3, requires_grad=True, device=self.device_manual
+                self.handresult.batch_size,
+                3,
+                requires_grad=True,
+                device=self.device_manual,
             )
         )
         self.R_params = nn.Parameter(
             torch.zeros(
-                self.handresult.batch_size, 3, requires_grad=True, device=self.device_manual
+                self.handresult.batch_size,
+                3,
+                requires_grad=True,
+                device=self.device_manual,
             )
         )
 
@@ -75,9 +85,43 @@ class OptimizeObject(LightningModule):
 
     def on_train_start(self):
         # randomly select objects
-        for data in self.object_dataloader:
-            data = ObjectData(**data)
-            break
+        # for data in self.object_dataloader:
+        #     data = ObjectData(**data)
+        #     break
+        batch_size = self.handresult.batch_size
+
+        # Selector data
+        hand_mesh = Meshes(verts=self.handresult.verts, faces=self.handresult.faces)
+        hand_normals = hand_mesh.verts_normals_padded()
+        predict_dataset = SelectorTestDataset(
+            hand_theta=self.handresult.theta,
+            hand_verts=self.handresult.verts,
+            hand_normals=hand_normals,
+        )
+        predict_dataloader = DataLoader(
+            predict_dataset, batch_size=batch_size, shuffle=False, pin_memory=True
+        )
+
+        # Selector inference
+        object_selection = instantiate(
+            self.cfg.object_selector, self.cfg, recursive=False
+        )
+        selector = pl.Trainer(
+            devices=len(self.cfg.devices), accelerator=self.accelerator
+        )
+        class_preds = selector.predict(
+            object_selection,
+            dataloaders=predict_dataloader,
+            ckpt_path=self.cfg.selector_ckpt,
+        )
+
+        # load object data
+        train_batch = []
+        for b in range(batch_size):
+            idx = self.object_dataset.fidxs.index(class_preds[b])
+            train_batch.append(self.object_dataset[idx])
+        train_batch = ObjectData.collate_fn(train_batch)
+        data = ObjectData(**train_batch)
         data = data.to(self.device_manual)
         self.object_fidx = data.fidx
         self.object_verts = data.object_verts
@@ -154,7 +198,7 @@ class OptimizeObject(LightningModule):
 
     def normalize_ho(self):
         self.object_verts, object_center, object_max_norm = (
-            OptimizeObject.batch_normalize_mesh(self.object_verts)
+            TestTimeOptimize.batch_normalize_mesh(self.object_verts)
         )
         for b in range(self.handresult.batch_size):
             logger.debug(
@@ -277,7 +321,9 @@ class OptimizeObject(LightningModule):
         return outputs
 
     def test_step(self, batch, batch_idx):
-        scale_cm = self.handresult.max_norm[0].item() * 100  # should be half the hand length
+        scale_cm = (
+            self.handresult.max_norm[0].item() * 100
+        )  # should be half the hand length
         new_object_verts, new_sampled_verts, *_ = self(batch, batch_idx)
         if self.handresult.verts.shape[0] > 1:
             logger.error(f"Batch size > 1 is not supported for evaluation.")
@@ -326,22 +372,25 @@ class OptimizeObject(LightningModule):
             hand_mesh,
             obj_mesh,
             pitch=(self.cfg.metric.penetration.vox.pitch / scale_cm),
-        ) * (scale_cm ** 3)
+        ) * (scale_cm**3)
         pene_volume = penetration_volume(
             hand_mesh, obj_mesh, engine=self.cfg.metric.penetration.volume.engine
-        ) * (scale_cm ** 3)
-        hand_volume = hand_mesh.volume * (scale_cm ** 3)
+        ) * (scale_cm**3)
+        hand_volume = hand_mesh.volume * (scale_cm**3)
 
         # simulation
         sim = instantiate(self.cfg.metric.simulation, cfg=self.cfg, _recursive_=False)
-        sd = sim.simulation_displacement(
-            hand_fidx,
-            hand_verts_cpu,
-            hand_faces_cpu,
-            obj_fidx,
-            obj_verts_cpu,
-            obj_faces_cpu,
-        ) * scale_cm
+        sd = (
+            sim.simulation_displacement(
+                hand_fidx,
+                hand_verts_cpu,
+                hand_faces_cpu,
+                obj_fidx,
+                obj_verts_cpu,
+                obj_faces_cpu,
+            )
+            * scale_cm
+        )
         sr = sd < self.cfg.metric.simulation.opt.success_thresh
 
         # diversity (not for YCB)
@@ -369,8 +418,10 @@ class OptimizeObject(LightningModule):
 
     def on_before_optimizer_step(self, optimizer):
         # save checkpoint
-        if self.batch_idx > self.opt.plot.tolerance_step: 
-            update_mask = self.current_losses < (self.min_losses - self.opt.plot.tolerance_difference)
+        if self.batch_idx > self.opt.plot.tolerance_step:
+            update_mask = self.current_losses < (
+                self.min_losses - self.opt.plot.tolerance_difference
+            )
             self.min_losses[update_mask] = self.current_losses[update_mask]
             for b in range(self.handresult.batch_size):
                 if update_mask[b]:
@@ -408,10 +459,13 @@ class OptimizeObject(LightningModule):
                     new_object_verts.padded.detach(), new_object_verts.split_sizes
                 )
                 object_aligned_verts.padded = (
-                    object_aligned_verts.padded * self.handresult.max_norm[:, None, None]
+                    object_aligned_verts.padded
+                    * self.handresult.max_norm[:, None, None]
                 ) + self.handresult.center
                 for b in range(batch_size):
-                    object_aligned_verts.padded[b, new_object_verts.split_sizes[b] :] = 0.0
+                    object_aligned_verts.padded[
+                        b, new_object_verts.split_sizes[b] :
+                    ] = 0.0
                 merged_meshes = merge_ho(
                     is_textured,
                     self.handresult.original_verts,
@@ -423,7 +477,10 @@ class OptimizeObject(LightningModule):
                 )
                 p3d_io = IO()
                 for b in range(batch_size):
-                    if self.update_mask[b] or batch_idx % self.opt.plot.mesh_period == 0:
+                    if (
+                        self.update_mask[b]
+                        or batch_idx % self.opt.plot.mesh_period == 0
+                    ):
                         if self.update_mask[b]:
                             tag = "best"
                         else:
@@ -463,7 +520,10 @@ class OptimizeObject(LightningModule):
                 rendered_images = self.handresult.renderer.render(merged_meshes)
                 rendered_images = (rendered_images * 255).cpu().numpy().astype(np.uint8)
                 for b in range(batch_size):
-                    if self.update_mask[b] or batch_idx % self.opt.plot.mesh_period == 0:
+                    if (
+                        self.update_mask[b]
+                        or batch_idx % self.opt.plot.mesh_period == 0
+                    ):
                         if self.update_mask[b]:
                             tag = "best"
                         else:

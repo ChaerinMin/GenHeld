@@ -22,7 +22,7 @@ from scipy.optimize import minimize
 import pandas as pd
 
 from dataset import HandData, _P3DFaces
-from module.optimize_object import OptimizeObject
+from module.testtime_optimize import TestTimeOptimize
 from visualization import Renderer
 
 
@@ -124,10 +124,9 @@ class DiscriminateHand(Sampler):
 
 
 class ReconstructHand(LightningModule):
-    def __init__(self, cfg, accelerator, device, object_optimization=None):
+    def __init__(self, cfg, accelerator, device):
         super().__init__()
         self.cfg = cfg
-        self.object_optimization = object_optimization
         self.accelerator = accelerator
         self.manual_device = device
         self.hand_dataset = instantiate(cfg.hand_dataset, cfg=cfg, device=device, _recursive_=False)
@@ -198,6 +197,7 @@ class ReconstructHand(LightningModule):
         inpainted_images = data.inpainted_images
         # handarm_segs = data.handarm_segs
         # object_segs = data.object_segs
+        hand_theta = data.hand_theta
         hand_verts = data.hand_verts
         hand_faces = data.hand_faces
         hand_aux = data.hand_aux
@@ -231,7 +231,7 @@ class ReconstructHand(LightningModule):
         # normalize to center
         hand_original_verts = hand_verts.clone()
         hand_original_faces = hand_faces
-        hand_verts, hand_center, hand_max_norm = OptimizeObject.batch_normalize_mesh(
+        hand_verts, hand_center, hand_max_norm = TestTimeOptimize.batch_normalize_mesh(
             hand_verts
         )
         for b in range(batch_size):
@@ -275,12 +275,13 @@ class ReconstructHand(LightningModule):
             batch_size=hand_verts.shape[0],
             fidxs=fidxs,
             dataset=self.hand_dataset,
-            verts=hand_verts,
+            theta=hand_theta,
+            verts=hand_verts, # mano
             faces=hand_faces,
             aux=hand_aux,
             max_norm=hand_max_norm,
             center=hand_center,
-            original_verts=hand_original_verts,
+            original_verts=hand_original_verts, # nimble
             original_faces=hand_original_faces,
             renderer=renderer,
             inpainted_images=inpainted_images,
@@ -291,12 +292,12 @@ class ReconstructHand(LightningModule):
         handresult = self(batch)
 
         # optimize
-        object_optimization = OptimizeObject(self.cfg, self.device, handresult)
+        tt_optimization = TestTimeOptimize(self.cfg, self.device, self.accelerator, handresult)
         print("optimizer initialized")
         callbacks = [LearningRateMonitor(logging_interval="step")]
         loggers = [
             WandbLogger(
-                project="optimize_object",
+                project="GenHeld",
                 offline=self.cfg.debug,
                 save_dir=self.cfg.output_dir,
             )
@@ -313,14 +314,14 @@ class ReconstructHand(LightningModule):
         )
         logger.info(f"Max global steps for object optimization: {trainer.max_steps}")
         logger.info(f"Max epochs for object optimization: {trainer.max_epochs}")
-        trainer.fit(object_optimization)
+        trainer.fit(tt_optimization)
 
         return dict(loss=torch.abs(self.dummy) + 1e10)
 
     def test_step(self, batch, batch_idx):
         handresult = self(batch)
 
-        object_optimization = OptimizeObject(self.cfg, self.manual_device, handresult)
+        tt_optimization = TestTimeOptimize(self.cfg, self.manual_device, self.accelerator, handresult)
         tester = pl.Trainer(
             devices=self.cfg.devices[0:1],
             accelerator=self.accelerator,
@@ -328,10 +329,10 @@ class ReconstructHand(LightningModule):
             enable_model_summary=False,
             default_root_dir=self.cfg.output_dir,
         )
-        tester.test(object_optimization)
+        tester.test(tt_optimization)
 
         # metrics logging
-        self.metric_results.append(object_optimization.metric_results)
+        self.metric_results.append(tt_optimization.metric_results)
 
         return
 

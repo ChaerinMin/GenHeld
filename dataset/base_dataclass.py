@@ -5,6 +5,8 @@ from typing import NamedTuple
 
 import torch
 from torch import Tensor
+from pytorch3d.structures import Pointclouds, join_pointclouds_as_batch
+
 
 _P3DFaces = namedtuple(
     "_P3DFaces",
@@ -60,6 +62,7 @@ class HandData:
     images: Tensor
     # handarm_segs: Tensor
     # object_segs: Tensor
+    hand_theta: Tensor
     hand_verts: Tensor
     hand_faces: NamedTuple
     xyz: Tensor = None
@@ -69,6 +72,7 @@ class HandData:
     def to(self, device):
         # self.handarm_segs = self.handarm_segs.to(device)
         # self.object_segs = self.object_segs.to(device)
+        self.hand_tehta = self.hand_theta.to(device)
         self.hand_verts = self.hand_verts.to(device)
         self.xyz = self.xyz.to(device)
 
@@ -212,4 +216,36 @@ class ObjectData:
         if "partitions" in keys:
             collated["partitions"] = PaddedTensor(partitions, padding_value=-1)
 
+        return collated
+
+
+@dataclass
+class SelectorData:
+    fidx: str
+    hand_theta: Tensor
+    hand_verts: Tensor
+    hand_normals: Tensor
+    hand_contacts: Tensor
+    class_vecs: Tensor
+    object_pcs: Pointclouds
+
+    def to(self, device):
+        self.hand_theta = self.hand_theta.to(device)
+        self.hand_verts = self.hand_verts.to(device)
+        self.hand_normals = self.hand_normals.to(device)
+        self.hand_contacts = self.hand_contacts.to(device)
+        self.class_vecs = self.class_vecs.to(device)
+        self.object_pcs = self.object_pcs.to(device)
+        self.object_pcs = self.object_pcs.to(device)
+        return self
+    
+    @staticmethod
+    def collate_fn(data):
+        keys = list(data[0].keys())
+        collated = {}
+        for k in keys:
+            if isinstance(data[0][k], torch.Tensor):
+                collated[k] = torch.stack([d[k] for d in data], dim=0)
+            elif isinstance(data[0][k], Pointclouds):
+                collated[k] = join_pointclouds_as_batch([d[k] for d in data])
         return collated

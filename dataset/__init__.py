@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 
-from .base_dataclass import PaddedTensor, HandData, ObjectData, _P3DFaces
+from .base_dataclass import PaddedTensor, HandData, ObjectData, SelectorData, SelectorTestDataset, _P3DFaces
 
 
 class DummyDataset(Dataset):

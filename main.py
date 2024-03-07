@@ -7,8 +7,10 @@ import warnings
 import hydra
 import numpy as np
 import pytorch_lightning as pl
+from lightning.pytorch.callbacks import ModelCheckpoint
 import torch
 from omegaconf import OmegaConf
+from hydra.utils import instantiate
 
 from module import ReconstructHand
 from configs.compare_configs import compare_cfg
@@ -50,6 +52,7 @@ def main(cfg):
         os.makedirs(cfg.results_dir, exist_ok=True)
     logger.info(f"Output directory is {cfg.output_dir}")
     cfg.ckpt_dir = os.path.join(cfg.output_dir, "checkpoints")
+    cfg.selector_ckpt_dir = os.path.join(cfg.output_dir, "selector_checkpoints")
     if not os.path.exists(cfg.ckpt_dir):
         os.makedirs(cfg.ckpt_dir)
 
@@ -69,23 +72,39 @@ def main(cfg):
         device = "cpu"
         logger.warning("CPU only, this will be slow!")
 
-    # main
-    reconstruction = ReconstructHand(cfg, accelerator, device)
-    reconstructor = pl.Trainer(
-        devices=len(cfg.devices),
-        accelerator=accelerator,
-        max_epochs=1,
-        enable_checkpointing=False,
-        enable_model_summary=False,
-        default_root_dir=cfg.output_dir,
-    )
-    if not cfg.test_only:
-        logger.info(f"Max global steps for hands: {reconstructor.max_steps}")
-        logger.info(f"Max epochs for hands: {reconstructor.max_epochs}")
-        reconstructor.fit(reconstruction)
-
-    # evaluate
-    reconstructor.test(reconstruction)
+    if cfg.object_selector == "train":
+        object_selection = instantiate(cfg.object_selector, cfg, recursive=False)
+        callbacks = [ModelCheckpoint(dirpath=cfg.selector_ckpt_dir, monitor="val_loss", mode="min")]
+        selector = pl.Trainer(
+            devices=len(cfg.devices),
+            accelerator=accelerator,
+            max_epochs=cfg.object_selector.Nepochs,
+            enable_checkpointing=True,
+            callbacks=callbacks,
+            enable_model_summary=True,
+            default_root_dir=cfg.output_dir,
+        )
+        selector.fit(object_selection)
+    elif cfg.object_selector == "inference":
+        # main
+        reconstruction = ReconstructHand(cfg, accelerator, device)
+        reconstructor = pl.Trainer(
+            devices=len(cfg.devices),
+            accelerator=accelerator,
+            max_epochs=1,
+            enable_checkpointing=False,
+            enable_model_summary=False,
+            default_root_dir=cfg.output_dir,
+        )
+        if not cfg.is_preoptimized:
+            logger.info(f"Max global steps for hands: {reconstructor.max_steps}")
+            logger.info(f"Max epochs for hands: {reconstructor.max_epochs}")
+            reconstructor.fit(reconstruction)
+    
+        # evaluate
+        reconstructor.test(reconstruction)
+    else:
+        logger.error(f"object_selector should be either train or inference, got {cfg.object_selector}")
 
     return
 

@@ -14,7 +14,7 @@ simulation:
   
   opt:
     success_thresh: 1
-    use_gui: True
+    use_gui: False
     num_steps: 35
     time_per_step: ${div:1,240}
     wait_time: 0

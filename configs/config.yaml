@@ -1,26 +1,36 @@
 defaults:
   - dataset/hand@hand_dataset: freihand
   - dataset/object@object_dataset: ycb
-  - module/optimize_object@optimize_object: obman
+  - dataset/selector@selector_dataset: dexycb
+
   - module/reconstruct_hand@reconstruct_hand: hifihr
+  - module/select_object@select_object: cvae
+  - module/testtime_optimize@testtime_optimize: obman
+  
   - vis: visualize
   - metric: metric
   - _self_
 
+
 debug: True
-test_only: True
+object_selector: 'train'  # 'train' or 'inference'
+is_preoptimized: False
+
 devices: [0]
 batch_size: 1
 
-resume_dir: '/dev/hdd/GenHeld/outputs/2024-02-20/all4000'
-output_dir: ???   # will be set automatically
-results_dir: ???  # will be set automatically
-ckpt_dir: ???     # will be set automatically
+resume_dir: ''
+selector_ckpt: ''
+output_dir: ??? 
+results_dir: ???
+selector_ckpt_dir: ???
+ckpt_dir: ???   
+
 
 hydra:
   job:
     chdir: False 
-  
+    
   job_logging:
     root:
       level: INFO

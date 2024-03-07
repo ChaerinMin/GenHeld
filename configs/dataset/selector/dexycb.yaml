@@ -1,0 +1,5 @@
+_target_: dataset.selector_dataset.DexYCBDataset
+
+opt:
+  path: "data/DexYCB"
+  mano_model: "assets/mano/MANO_RIGHT.pkl"

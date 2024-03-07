@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from pytorch3d.io import load_obj, load_ply
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
+from pytorch3d.ops.knn import knn_points
 from torch.utils.data import Dataset
 
 from dataset import _P3DFaces
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 class HandDataset(Dataset):
     def __init__(self, opt, cfg, device) -> None:
         self.cfg = cfg
-        self.device=device
+        self.device = device
         self.image = opt.image
         self.hand = opt.hand
         self.cached = opt.cached
@@ -302,11 +303,17 @@ class HandDataset(Dataset):
         # )
 
         # image -> hand mesh
-        if not os.path.exists(self.cached.hand.path % fidx) or not os.path.exists(self.cached.hand.xyz % fidx):
-            image_hifihr = image.permute(2, 0, 1).unsqueeze(0).to(self.device).to(
-                torch.float32
-            ) / 255.0
-            output = self.hifihr_model("FreiHand", mode_train=False, images=image_hifihr) 
+        if not os.path.exists(self.cached.hand.path % fidx) or not os.path.exists(
+            self.cached.hand.xyz % fidx
+        ):
+            image_hifihr = (
+                image.permute(2, 0, 1).unsqueeze(0).to(self.device).to(torch.float32)
+                / 255.0
+            )
+            output = self.hifihr_model(
+                "FreiHand", mode_train=False, images=image_hifihr
+            )
+            hand_theta = output["pose_params"]
             hand_mesh = output["skin_meshes"]
             hand_textures = output["textures"]
             xyz = output["xyz"]
@@ -317,7 +324,14 @@ class HandDataset(Dataset):
             hand_mesh = hand_mesh.verts_padded()[0].detach().cpu().numpy()
             hand_textures = hand_textures[0].detach().cpu().numpy()
             xyz = xyz[0].detach().cpu().numpy()
-            save_hifihr_mesh(hand_save_path, xyz_save_path, self.hand.nimble_tex_fuv, hand_mesh, hand_textures, xyz)
+            save_hifihr_mesh(
+                hand_save_path,
+                xyz_save_path,
+                self.hand.nimble_tex_fuv,
+                hand_mesh,
+                hand_textures,
+                xyz,
+            )
             logger.info(f"Saved HiFiHR hand mesh to {hand_save_path}")
             logger.info(f"Saved HiFiHR predicted xyz to {xyz_save_path}")
 
@@ -333,9 +347,10 @@ class HandDataset(Dataset):
             images=image,
             # object_segs=object_seg,
             # handarm_segs=handarm_seg,
+            hand_theta=hand_theta,
             hand_verts=hand_verts,
             hand_faces=hand_faces,
-            xyz=xyz
+            xyz=xyz,
         )
 
         # add only if not None
@@ -407,4 +422,56 @@ class ObjectDataset(Dataset):
             return_dict["contacts"] = contacts
             return_dict["partitions"] = partitions
 
+        return return_dict
+
+
+class SelectorDataset(Dataset):
+    def __init__(self, opt, cfg):
+        self.opt = opt
+        self.n_class = opt.n_class
+        return
+
+    def __len__(self):
+        return len(self.fidxs)
+
+    def __getitem__(self, idx):
+        raise NotImplementedError
+
+    @staticmethod
+    def get_NN(src_xyz, trg_xyz, k=1):
+        '''
+        :param src_xyz: [B, N1, 3]
+        :param trg_xyz: [B, N2, 3]
+        :return: nn_dists, nn_dix: all [B, 3000] tensor for NN distance and index in N2
+        '''
+        B = src_xyz.size(0)
+        src_lengths = torch.full(
+            (src_xyz.shape[0],), src_xyz.shape[1], dtype=torch.int64, device=src_xyz.device
+        )  # [B], N for each num
+        trg_lengths = torch.full(
+            (trg_xyz.shape[0],), trg_xyz.shape[1], dtype=torch.int64, device=trg_xyz.device
+        )
+        src_nn = knn_points(src_xyz, trg_xyz, lengths1=src_lengths, lengths2=trg_lengths, K=k)  # [dists, idx]
+        nn_dists = src_nn.dists[..., 0]
+        nn_idx = src_nn.idx[..., 0]
+        return nn_dists, nn_idx
+
+
+class SelectorTestDataset(Dataset):
+    def __init__(self, hand_theta, hand_verts, hand_normals):
+        assert hand_theta.shape[1] == 48  # 3 + 15 * 3
+        self.hand_theta = hand_theta
+        self.hand_verts = hand_verts
+        self.hand_normals = hand_normals
+        return
+
+    def __len__(self):
+        return self.hand_theta.shape[0]
+
+    def __getitem__(self, idx):
+        return_dict = dict(
+            hand_theta=self.hand_theta[idx],
+            hand_verts=self.hand_verts[idx],
+            hand_normals=self.hand_normals[idx],
+        )
         return return_dict

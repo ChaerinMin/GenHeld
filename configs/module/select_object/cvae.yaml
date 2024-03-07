@@ -1,0 +1,31 @@
+_target_: module.select_object.SelectObject
+
+opt:
+  n_class: 21
+  train_batch_size: 4
+  Nepochs: 100
+  lr: 0.0005
+  weight_decay: 0.0005
+  val:
+    ratio: 0.1
+    period: 50
+
+  dim_hand_pose: 60
+  dim_hand_verts: 778
+  dim_latent: 16
+
+  loss: 
+    kl_weight: 0.01
+    kl_annealing_epoch: 50 
+    category_weight: 1
+    objectpoint_weight: 0.1
+    contact_weight: 0.1
+
+  category:
+    dim_hidden: 512
+
+  object:
+    dim_hidden: 64
+
+  fusion:
+    dim_hidden: 512
