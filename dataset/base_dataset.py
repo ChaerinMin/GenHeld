@@ -437,32 +437,13 @@ class SelectorDataset(Dataset):
     def __getitem__(self, idx):
         raise NotImplementedError
 
-    @staticmethod
-    def get_NN(src_xyz, trg_xyz, k=1):
-        '''
-        :param src_xyz: [B, N1, 3]
-        :param trg_xyz: [B, N2, 3]
-        :return: nn_dists, nn_dix: all [B, 3000] tensor for NN distance and index in N2
-        '''
-        B = src_xyz.size(0)
-        src_lengths = torch.full(
-            (src_xyz.shape[0],), src_xyz.shape[1], dtype=torch.int64, device=src_xyz.device
-        )  # [B], N for each num
-        trg_lengths = torch.full(
-            (trg_xyz.shape[0],), trg_xyz.shape[1], dtype=torch.int64, device=trg_xyz.device
-        )
-        src_nn = knn_points(src_xyz, trg_xyz, lengths1=src_lengths, lengths2=trg_lengths, K=k)  # [dists, idx]
-        nn_dists = src_nn.dists[..., 0]
-        nn_idx = src_nn.idx[..., 0]
-        return nn_dists, nn_idx
-
 
 class SelectorTestDataset(Dataset):
-    def __init__(self, hand_theta, hand_verts, hand_normals):
+    def __init__(self, hand_fidxs, object_fidxs, hand_theta, hand_verts_n):
+        self.hand_fidxs = hand_fidxs
         assert hand_theta.shape[1] == 48  # 3 + 15 * 3
         self.hand_theta = hand_theta
-        self.hand_verts = hand_verts
-        self.hand_normals = hand_normals
+        self.hand_verts_n = hand_verts_n
         return
 
     def __len__(self):
@@ -470,8 +451,8 @@ class SelectorTestDataset(Dataset):
 
     def __getitem__(self, idx):
         return_dict = dict(
+            hand_fidxs=self.hand_fidxs[idx],
             hand_theta=self.hand_theta[idx],
-            hand_verts=self.hand_verts[idx],
-            hand_normals=self.hand_normals[idx],
+            hand_verts_n=self.hand_verts_n[idx],
         )
         return return_dict

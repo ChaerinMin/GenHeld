@@ -7,7 +7,8 @@ import warnings
 import hydra
 import numpy as np
 import pytorch_lightning as pl
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.loggers import WandbLogger
 import torch
 from omegaconf import OmegaConf
 from hydra.utils import instantiate
@@ -18,7 +19,7 @@ from configs.compare_configs import compare_cfg
 torch.set_float32_matmul_precision("medium")
 
 logger = logging.getLogger(__name__)
-logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
 warnings.filterwarnings("ignore")
 OmegaConf.register_resolver("div", lambda x, y: float(x) / float(y))
 
@@ -55,13 +56,15 @@ def main(cfg):
     cfg.selector_ckpt_dir = os.path.join(cfg.output_dir, "selector_checkpoints")
     if not os.path.exists(cfg.ckpt_dir):
         os.makedirs(cfg.ckpt_dir)
+    if not os.path.exists(cfg.selector_ckpt_dir):
+        os.makedirs(cfg.selector_ckpt_dir)
 
     # compare config
     if cfg.resume_dir:
         old_cfg_path = os.path.join(cfg.output_dir, ".hydra", "config.yaml")
         old_cfg = OmegaConf.load(old_cfg_path)
         logger.info(f"Comparing with {old_cfg_path}")
-        compare_cfg(cfg, old_cfg)    
+        compare_cfg(cfg, old_cfg)
 
     # accelerator
     if torch.cuda.is_available():
@@ -74,17 +77,35 @@ def main(cfg):
 
     if cfg.object_selector == "train":
         object_selection = instantiate(cfg.object_selector, cfg, recursive=False)
-        callbacks = [ModelCheckpoint(dirpath=cfg.selector_ckpt_dir, monitor="val_loss", mode="min")]
+        callbacks = [
+            ModelCheckpoint(
+                dirpath=cfg.selector_ckpt_dir, monitor="val_loss", mode="min", verbose=cfg.debug
+            ),
+            LearningRateMonitor(logging_interval="step")
+        ]
+        loggers = [
+            WandbLogger(
+                project="GenHeld_Selector_train",
+                offline=cfg.debug,
+                save_dir=cfg.output_dir,
+            )
+        ]
         selector = pl.Trainer(
             devices=len(cfg.devices),
             accelerator=accelerator,
             max_epochs=cfg.object_selector.Nepochs,
             enable_checkpointing=True,
             callbacks=callbacks,
+            loggers=loggers,
             enable_model_summary=True,
             default_root_dir=cfg.output_dir,
+            val_check_interval=1.0,  # one epoch
         )
-        selector.fit(object_selection)
+        if cfg.selector_ckpt:  # resume training
+            logger.warning(f"Resume from {cfg.selector_ckpt}")
+            selector.fit(object_selection, ckpt_path=cfg.selector_ckpt)
+        else:
+            selector.fit(object_selection)
     elif cfg.object_selector == "inference":
         # main
         reconstruction = ReconstructHand(cfg, accelerator, device)
@@ -100,11 +121,13 @@ def main(cfg):
             logger.info(f"Max global steps for hands: {reconstructor.max_steps}")
             logger.info(f"Max epochs for hands: {reconstructor.max_epochs}")
             reconstructor.fit(reconstruction)
-    
+
         # evaluate
         reconstructor.test(reconstruction)
     else:
-        logger.error(f"object_selector should be either train or inference, got {cfg.object_selector}")
+        logger.error(
+            f"object_selector should be either train or inference, got {cfg.object_selector}"
+        )
 
     return
 

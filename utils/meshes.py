@@ -1,9 +1,11 @@
 import logging
+from typing import Dict, NamedTuple, Union
+
 import torch
-from pytorch3d.structures.meshes import Meshes
 from pytorch3d.renderer import TexturesUV
+from pytorch3d.structures.meshes import Meshes
 from torch import Tensor
-from typing import NamedTuple, Dict
+
 from dataset import PaddedTensor
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,9 @@ def merge_ho(
     batch_size = h_verts.shape[0]
 
     verts = torch.cat([h_verts, o_verts.padded], dim=1)
-    f_v = torch.cat([h_faces.verts_idx, h_verts.shape[1] + o_faces.verts_idx.padded], dim=1)
+    f_v = torch.cat(
+        [h_faces.verts_idx, h_verts.shape[1] + o_faces.verts_idx.padded], dim=1
+    )
     for b in range(batch_size):
         f_v[b, h_faces.verts_idx.shape[1] + o_faces.verts_idx.split_sizes[b] :] = -1
 
@@ -65,7 +69,10 @@ def merge_ho(
             o_vt[b, o_aux["verts_uvs"].split_sizes[b] :] = 0.0
         vt = torch.cat([h_vt, o_vt], dim=1)
         f_vt = torch.cat(
-            [h_faces.textures_idx, o_faces.textures_idx.padded + h_aux["verts_uvs"].shape[1]],
+            [
+                h_faces.textures_idx,
+                o_faces.textures_idx.padded + h_aux["verts_uvs"].shape[1],
+            ],
             dim=1,
         )
         for b in range(batch_size):
@@ -93,3 +100,37 @@ def merge_ho(
     meshes.verts_normals_packed()
 
     return meshes
+
+
+def batch_normalize_mesh(vertices: Union[Tensor, PaddedTensor]):
+    # Tensor or PaddedTensor
+    if isinstance(vertices, Tensor):
+        verts = vertices
+        padded_split = torch.tensor(
+            [verts.shape[1]] * verts.shape[0], device=verts.device
+        )
+    elif isinstance(vertices, PaddedTensor):
+        verts = vertices.padded
+        padded_split = vertices.split_sizes
+    else:
+        logger.error(f"verts should be torch.Tensor or PaddedTensor, got {type(verts)}")
+        raise ValueError
+
+    # batch normalize mesh
+    center = verts.sum(dim=1, keepdim=True) / padded_split[:, None, None]
+    verts = verts - center
+    for i in range(verts.shape[0]):
+        verts[i, padded_split[i] :] = 0.0
+    max_norm = verts.norm(dim=2).max(dim=1)[0]
+    verts = verts / max_norm.unsqueeze(1).unsqueeze(2)
+
+    # Tensor or PaddedTensor
+    if isinstance(vertices, Tensor):
+        vertices = verts
+    elif isinstance(vertices, PaddedTensor):
+        vertices.padded = verts
+    else:
+        logger.error(f"verts should be torch.Tensor or PaddedTensor, got {type(verts)}")
+        raise ValueError
+
+    return vertices, center, max_norm

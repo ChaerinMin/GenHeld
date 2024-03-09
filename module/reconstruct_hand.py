@@ -24,6 +24,7 @@ import pandas as pd
 from dataset import HandData, _P3DFaces
 from module.testtime_optimize import TestTimeOptimize
 from visualization import Renderer
+from utils import batch_normalize_mesh
 
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,9 @@ class ReconstructHand(LightningModule):
         self.cfg = cfg
         self.accelerator = accelerator
         self.manual_device = device
-        self.hand_dataset = instantiate(cfg.hand_dataset, cfg=cfg, device=device, _recursive_=False)
+        self.hand_dataset = instantiate(
+            cfg.hand_dataset, cfg=cfg, device=device, _recursive_=False
+        )
         self.inpainter = instantiate(cfg.vis.inpaint, device=device, _recursive_=False)
 
         self.hifihr_intrinsics = torch.tensor(
@@ -214,7 +217,7 @@ class ReconstructHand(LightningModule):
             with console.status(
                 "Removing and inpainting the hand...", spinner="monkey"
             ):
-                inpainted_images = self.inpainter(images, fidxs)  
+                inpainted_images = self.inpainter(images, fidxs)
                 inapinted_dir = os.path.dirname(
                     self.hand_dataset.cached.image.inpainted_path
                 )
@@ -231,7 +234,7 @@ class ReconstructHand(LightningModule):
         # normalize to center
         hand_original_verts = hand_verts.clone()
         hand_original_faces = hand_faces
-        hand_verts, hand_center, hand_max_norm = TestTimeOptimize.batch_normalize_mesh(
+        hand_verts_n, hand_center, hand_max_norm = batch_normalize_mesh(
             hand_verts
         )
         for b in range(batch_size):
@@ -242,11 +245,11 @@ class ReconstructHand(LightningModule):
         # nimble to mano
         if self.hand_dataset.nimble:
             logger.debug("Hand model: NIMBLE")
-            hand_verts, hand_faces_verts_idx = self.hand_dataset.nimble_to_mano(
-                hand_verts
+            hand_verts_n, hand_faces_verts_idx = self.hand_dataset.nimble_to_mano(
+                hand_verts_n
             )
             hand_faces_verts_idx = hand_faces_verts_idx.unsqueeze(0).repeat(
-                hand_verts.shape[0], 1, 1
+                batch_size, 1, 1
             )
             hand_faces = _P3DFaces(verts_idx=hand_faces_verts_idx)
         else:
@@ -276,12 +279,12 @@ class ReconstructHand(LightningModule):
             fidxs=fidxs,
             dataset=self.hand_dataset,
             theta=hand_theta,
-            verts=hand_verts, # mano
+            verts_n=hand_verts_n,  # mano
             faces=hand_faces,
             aux=hand_aux,
             max_norm=hand_max_norm,
             center=hand_center,
-            original_verts=hand_original_verts, # nimble
+            original_verts=hand_original_verts,  # nimble
             original_faces=hand_original_faces,
             renderer=renderer,
             inpainted_images=inpainted_images,
@@ -292,12 +295,14 @@ class ReconstructHand(LightningModule):
         handresult = self(batch)
 
         # optimize
-        tt_optimization = TestTimeOptimize(self.cfg, self.device, self.accelerator, handresult)
+        tt_optimization = TestTimeOptimize(
+            self.cfg, self.device, self.accelerator, handresult
+        )
         print("optimizer initialized")
         callbacks = [LearningRateMonitor(logging_interval="step")]
         loggers = [
             WandbLogger(
-                project="GenHeld",
+                project="GenHeld_TTA",
                 offline=self.cfg.debug,
                 save_dir=self.cfg.output_dir,
             )
@@ -321,7 +326,9 @@ class ReconstructHand(LightningModule):
     def test_step(self, batch, batch_idx):
         handresult = self(batch)
 
-        tt_optimization = TestTimeOptimize(self.cfg, self.manual_device, self.accelerator, handresult)
+        tt_optimization = TestTimeOptimize(
+            self.cfg, self.manual_device, self.accelerator, handresult
+        )
         tester = pl.Trainer(
             devices=self.cfg.devices[0:1],
             accelerator=self.accelerator,
@@ -379,7 +386,7 @@ class HandResult:
     batch_size: int
     fidxs: Tensor
     dataset: Any
-    verts: Tensor
+    verts_n: Tensor
     faces: NamedTuple
     aux: NamedTuple
     max_norm: Tensor

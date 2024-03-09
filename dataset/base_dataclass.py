@@ -221,22 +221,19 @@ class ObjectData:
 
 @dataclass
 class SelectorData:
-    fidx: str
+    fidxs: str
     hand_theta: Tensor
-    hand_verts: Tensor
-    hand_normals: Tensor
-    hand_contacts: Tensor
+    hand_verts_n: Tensor
+    hand_contacts_n: Tensor
     class_vecs: Tensor
-    object_pcs: Pointclouds
+    object_pcs_n: Pointclouds
 
     def to(self, device):
         self.hand_theta = self.hand_theta.to(device)
-        self.hand_verts = self.hand_verts.to(device)
-        self.hand_normals = self.hand_normals.to(device)
-        self.hand_contacts = self.hand_contacts.to(device)
+        self.hand_verts_n = self.hand_verts_n.to(device)
+        self.hand_contacts_n = self.hand_contacts_n.to(device)
         self.class_vecs = self.class_vecs.to(device)
-        self.object_pcs = self.object_pcs.to(device)
-        self.object_pcs = self.object_pcs.to(device)
+        self.object_pcs_n = self.object_pcs_n.to(device)
         return self
     
     @staticmethod

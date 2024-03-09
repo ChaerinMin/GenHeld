@@ -20,6 +20,9 @@ opt:
     category_weight: 1
     objectpoint_weight: 0.1
     contact_weight: 0.1
+    consistency_weight: 0.05
+  
+  visualize_epoch: 1
 
   category:
     dim_hidden: 512
