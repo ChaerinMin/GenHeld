@@ -2,17 +2,24 @@ _target_: module.select_object.SelectObject
 
 opt:
   n_class: 21
-  train_batch_size: 4
-  Nepochs: 100
+  Nepochs: 1000
   lr: 0.0005
   weight_decay: 0.0005
-  val:
-    ratio: 0.1
-    period: 50
 
-  dim_hand_pose: 60
+  dim_hand_pose: 48
   dim_hand_verts: 778
   dim_latent: 16
+  
+  train:
+    batch_size: 40
+    n_vis_samples: 4
+    vis_epoch: 100
+    debug_vis_epoch: 100
+  val:
+    ratio: 0.2
+    period: 50
+    vis_epoch: 50
+    debug_vis_epoch: 200
 
   loss: 
     kl_weight: 0.01
@@ -21,14 +28,13 @@ opt:
     objectpoint_weight: 0.1
     contact_weight: 0.1
     consistency_weight: 0.05
-  
-  visualize_epoch: 1
 
   category:
-    dim_hidden: 512
+    hc: 512
 
   object:
-    dim_hidden: 64
+    hc: 64
+    points: 7569
 
   fusion:
-    dim_hidden: 512
+    hc: 512

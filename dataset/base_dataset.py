@@ -7,9 +7,8 @@ import random
 import cv2
 import numpy as np
 import torch
-from pytorch3d.io import load_obj, load_ply
+from pytorch3d.io import load_obj, load_ply, IO
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
-from pytorch3d.ops.knn import knn_points
 from torch.utils.data import Dataset
 
 from dataset import _P3DFaces
@@ -17,6 +16,7 @@ from submodules.NIMBLE_model.utils import vertices2landmarks
 from submodules.HiFiHR.models_res_nimble import Model as HiFiHRModel
 from submodules.HiFiHR.utils.train_utils import load_hifihr
 from submodules.HiFiHR.utils.NIMBLE_model.utils import save_hifihr_mesh
+from submodules.HiFiHR.utils.my_mano import MyMANOLayer
 
 NIMBLE_N_VERTS = 5990
 ROOT_JOINT_IDX = 9
@@ -50,6 +50,7 @@ class HandDataset(Dataset):
             self.device, self.hifihr_model, self.hand.hifihr_pretrained
         )
         self.hifihr_model.eval()
+        self.hifihr_r_layer = MyMANOLayer(ifRender=False, device=self.device, shape_ncomp=10, pose_ncomp=48, tex_ncomop=None)
 
         # mano
         self.mano_f = torch.from_numpy(
@@ -88,6 +89,91 @@ class HandDataset(Dataset):
 
     def __len__(self):
         return len(self.fidxs)
+
+    def __getitem__(self, idx):
+        fidx = self.fidxs[idx]
+
+        # image
+        image = torch.from_numpy(
+            cv2.cvtColor(cv2.imread(self.image.path % fidx), cv2.COLOR_BGR2RGB)
+        )
+        if os.path.exists(self.cached.image.inpainted_path % fidx):
+            inpainted_image = torch.from_numpy(
+                cv2.cvtColor(
+                    cv2.imread(self.cached.image.inpainted_path % fidx),
+                    cv2.COLOR_BGR2RGB,
+                )
+            )
+        else:
+            inpainted_image = None
+
+        # image -> hand mesh
+        if not os.path.exists(self.cached.hand.path % fidx) or not os.path.exists(
+            self.cached.hand.xyz % fidx
+        ):
+            image_hifihr = (
+                image.permute(2, 0, 1).unsqueeze(0).to(self.device).to(torch.float32)
+                / 255.0
+            )
+            output = self.hifihr_model(
+                "FreiHand", mode_train=False, images=image_hifihr
+            )
+            hand_theta = output["pose_params"]
+            hand_mesh = output["skin_meshes"]
+            hand_textures = output["textures"]
+            xyz = output["xyz"]
+
+            # normalize rotation
+            output_r = self.hifihr_r_layer(hand_theta, handle_collision=False)
+
+            # save
+            hand_save_path = self.cached.hand.path % fidx
+            xyz_save_path = self.cached.hand.xyz % fidx
+            hand_r_save_path = self.cached.hand_r.path % fidx
+            hand_mesh = hand_mesh.verts_padded()[0].detach().cpu().numpy()
+            hand_textures = hand_textures[0].detach().cpu().numpy()
+            xyz = xyz[0].detach().cpu().numpy()
+            hand_mesh_r = output_r["skin_meshes"].verts_padded()[0].detach().cpu().numpy()
+            save_hifihr_mesh(
+                hand_save_path,
+                xyz_save_path,
+                self.hand.nimble_tex_fuv,
+                hand_mesh,
+                hand_textures,
+                xyz,
+            )
+            io = IO()
+            io.save_mesh(hand_mesh_r, hand_r_save_path)
+            logger.info(f"Saved HiFiHR hand mesh to {hand_save_path}")
+            logger.info(f"Saved HiFiHR predicted xyz to {xyz_save_path}")
+            logger.info(f"Saved HiFiHR hand mesh_r to {hand_r_save_path}")
+
+        # hand mesh
+        hand_verts, hand_faces, hand_aux = load_obj(
+            self.cached.hand.path % fidx, load_textures=True
+        )
+        hand_verts_r, _, _ = load_obj(self.cached.hand_r.path % fidx, load_textures=False)
+        # keypoints
+        xyz = np.load(self.cached.hand.xyz % fidx)
+
+        return_dict = dict(
+            fidxs=fidx,
+            images=image,
+            hand_theta=hand_theta,
+            hand_verts=hand_verts,
+            hand_verts_r=hand_verts_r,
+            hand_faces=hand_faces,
+            xyz=xyz,
+        )
+
+        # add only if not None
+        if hand_aux is not None:
+            hand_aux = {k: v for k, v in hand_aux._asdict().items() if v is not None}
+            return_dict["hand_aux"] = hand_aux
+        if inpainted_image is not None:
+            return_dict["inpainted_images"] = inpainted_image
+
+        return return_dict
 
     def nimblearm(self, device):
         """
@@ -279,89 +365,6 @@ class HandDataset(Dataset):
         )
         return nimble_ha_verts, nimble_ha_faces
 
-    def __getitem__(self, idx):
-        fidx = self.fidxs[idx]
-
-        # image
-        image = torch.from_numpy(
-            cv2.cvtColor(cv2.imread(self.image.path % fidx), cv2.COLOR_BGR2RGB)
-        )
-        if os.path.exists(self.cached.image.inpainted_path % fidx):
-            inpainted_image = torch.from_numpy(
-                cv2.cvtColor(
-                    cv2.imread(self.cached.image.inpainted_path % fidx),
-                    cv2.COLOR_BGR2RGB,
-                )
-            )
-        else:
-            inpainted_image = None
-        # handarm_seg = torch.from_numpy(
-        #     np.array(Image.open(self.cached.image.handarm_seg % fidx))
-        # )
-        # object_seg = torch.from_numpy(
-        #     np.array(Image.open(self.cached.image.object_seg % fidx))
-        # )
-
-        # image -> hand mesh
-        if not os.path.exists(self.cached.hand.path % fidx) or not os.path.exists(
-            self.cached.hand.xyz % fidx
-        ):
-            image_hifihr = (
-                image.permute(2, 0, 1).unsqueeze(0).to(self.device).to(torch.float32)
-                / 255.0
-            )
-            output = self.hifihr_model(
-                "FreiHand", mode_train=False, images=image_hifihr
-            )
-            hand_theta = output["pose_params"]
-            hand_mesh = output["skin_meshes"]
-            hand_textures = output["textures"]
-            xyz = output["xyz"]
-
-            # save
-            hand_save_path = self.cached.hand.path % fidx
-            xyz_save_path = self.cached.hand.xyz % fidx
-            hand_mesh = hand_mesh.verts_padded()[0].detach().cpu().numpy()
-            hand_textures = hand_textures[0].detach().cpu().numpy()
-            xyz = xyz[0].detach().cpu().numpy()
-            save_hifihr_mesh(
-                hand_save_path,
-                xyz_save_path,
-                self.hand.nimble_tex_fuv,
-                hand_mesh,
-                hand_textures,
-                xyz,
-            )
-            logger.info(f"Saved HiFiHR hand mesh to {hand_save_path}")
-            logger.info(f"Saved HiFiHR predicted xyz to {xyz_save_path}")
-
-        # hand mesh
-        hand_verts, hand_faces, hand_aux = load_obj(
-            self.cached.hand.path % fidx, load_textures=True
-        )
-        # keypoints
-        xyz = np.load(self.cached.hand.xyz % fidx)
-
-        return_dict = dict(
-            fidxs=fidx,
-            images=image,
-            # object_segs=object_seg,
-            # handarm_segs=handarm_seg,
-            hand_theta=hand_theta,
-            hand_verts=hand_verts,
-            hand_faces=hand_faces,
-            xyz=xyz,
-        )
-
-        # add only if not None
-        if hand_aux is not None:
-            hand_aux = {k: v for k, v in hand_aux._asdict().items() if v is not None}
-            return_dict["hand_aux"] = hand_aux
-        if inpainted_image is not None:
-            return_dict["inpainted_images"] = inpainted_image
-
-        return return_dict
-
 
 class ObjectDataset(Dataset):
     def __init__(self, opt) -> None:
@@ -428,7 +431,6 @@ class ObjectDataset(Dataset):
 class SelectorDataset(Dataset):
     def __init__(self, opt, cfg):
         self.opt = opt
-        self.n_class = opt.n_class
         return
 
     def __len__(self):
@@ -439,11 +441,12 @@ class SelectorDataset(Dataset):
 
 
 class SelectorTestDataset(Dataset):
-    def __init__(self, hand_fidxs, object_fidxs, hand_theta, hand_verts_n):
+    def __init__(self, hand_fidxs, hand_theta, hand_verts_n, hand_verts_r):
         self.hand_fidxs = hand_fidxs
         assert hand_theta.shape[1] == 48  # 3 + 15 * 3
         self.hand_theta = hand_theta
         self.hand_verts_n = hand_verts_n
+        self.hand_verts_r = hand_verts_r
         return
 
     def __len__(self):
@@ -454,5 +457,6 @@ class SelectorTestDataset(Dataset):
             hand_fidxs=self.hand_fidxs[idx],
             hand_theta=self.hand_theta[idx],
             hand_verts_n=self.hand_verts_n[idx],
+            hand_verts_r=self.hand_verts_r[idx],
         )
         return return_dict

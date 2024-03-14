@@ -37,8 +37,8 @@ def square_distance(src, dst):
     B, N, _ = src.shape
     _, M, _ = dst.shape
     dist = -2 * torch.matmul(src, dst.permute(0, 2, 1))
-    dist += torch.sum(src ** 2, -1).view(B, N, 1)
-    dist += torch.sum(dst ** 2, -1).view(B, 1, M)
+    dist = dist + torch.sum(src ** 2, -1).view(B, N, 1)
+    dist = dist + torch.sum(dst ** 2, -1).view(B, 1, M)
     return dist
 
 
@@ -101,10 +101,10 @@ def query_ball_point(radius, nsample, xyz, new_xyz):
     _, S, _ = new_xyz.shape
     group_idx = torch.arange(N, dtype=torch.long).to(device).view(1, 1, N).repeat([B, S, 1])
     sqrdists = square_distance(new_xyz, xyz)
-    group_idx[sqrdists > radius ** 2] = N
+    group_idx[sqrdists > radius ** 2] = N - 1
     group_idx = group_idx.sort(dim=-1)[0][:, :, :nsample]
     group_first = group_idx[:, :, 0].view(B, S, 1).repeat([1, 1, nsample])
-    mask = group_idx == N
+    mask = group_idx == (N - 1)
     group_idx[mask] = group_first[mask]
     return group_idx
 
@@ -204,7 +204,7 @@ class PointNetSetAbstraction(nn.Module):
         new_points = new_points.permute(0, 3, 2, 1) # [B, C+D, nsample,npoint]
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
-            new_points =  F.relu(bn(conv(new_points)), inplace=True)
+            new_points =  F.relu(bn(conv(new_points)))
         # print('after conv:', new_points.shape)
         new_points = torch.max(new_points, 2)[0]
         new_xyz = new_xyz.permute(0, 2, 1)
@@ -251,7 +251,7 @@ class PointNetSetAbstractionMsg(nn.Module):
             K = self.nsample_list[i]
             group_idx = query_ball_point(radius, K, xyz, new_xyz)
             grouped_xyz = index_points(xyz, group_idx)
-            grouped_xyz -= new_xyz.view(B, S, 1, C)
+            grouped_xyz = grouped_xyz - new_xyz.view(B, S, 1, C)
             if points is not None:
                 grouped_points = index_points(points, group_idx)
                 grouped_points = torch.cat([grouped_points, grouped_xyz], dim=-1)
@@ -262,7 +262,7 @@ class PointNetSetAbstractionMsg(nn.Module):
             for j in range(len(self.conv_blocks[i])):
                 conv = self.conv_blocks[i][j]
                 bn = self.bn_blocks[i][j]
-                grouped_points =  F.relu(bn(conv(grouped_points)), inplace=True)
+                grouped_points =  F.relu(bn(conv(grouped_points)))
             new_points = torch.max(grouped_points, 2)[0]  # [B, D', S]
             new_points_list.append(new_points)
 
@@ -271,9 +271,9 @@ class PointNetSetAbstractionMsg(nn.Module):
         return new_xyz, new_points_concat
 
 
-class PointNetFeaturePropagation(nn.Module):
+class PointNetPropagation(nn.Module):
     def __init__(self, in_channel, mlp):
-        super(PointNetFeaturePropagation, self).__init__()
+        super(PointNetPropagation, self).__init__()
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
         last_channel = in_channel
@@ -320,7 +320,7 @@ class PointNetFeaturePropagation(nn.Module):
         new_points = new_points.permute(0, 2, 1)
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
-            new_points = F.relu(bn(conv(new_points)), inplace=True)
+            new_points = F.relu(bn(conv(new_points)))
         return new_points
 
 

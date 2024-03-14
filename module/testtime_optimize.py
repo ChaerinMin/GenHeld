@@ -5,6 +5,7 @@ import os
 import re
 
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -16,20 +17,33 @@ from pytorch3d.transforms import (
     axis_angle_to_matrix,
     matrix_to_euler_angles,
 )
+from pytorch3d.structures import Pointclouds
 from pytorch_lightning import LightningModule
 from torch import nn
 from torch.utils.data import DataLoader
 from trimesh import Trimesh
 
-from dataset import DummyDataset, ObjectData, PaddedTensor
+from dataset import DummyDataset, ObjectData, PaddedTensor, SelectorTestData
 from dataset.base_dataset import SelectorTestDataset
 from loss import ContactLoss
 from metric import penetration_volume, penetration_vox
 from utils import merge_ho, batch_normalize_mesh
-from visualization import blend_images, plot_pointcloud
+from visualization import blend_images
 
 mpl.rcParams["figure.dpi"] = 80
 logger = logging.getLogger(__name__)
+
+
+def plot_pointcloud(points, title=""):
+    x, y, z = points.clone().detach().cpu().squeeze().unbind(1)
+    fig = plt.figure(figsize=(5, 5))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter3D(x, z, -y)
+    ax.set_xlabel("x")
+    ax.set_ylabel("z")
+    ax.set_zlabel("y")
+    ax.set_title(title)
+    plt.show()
 
 
 class TestTimeOptimize(LightningModule):
@@ -90,13 +104,16 @@ class TestTimeOptimize(LightningModule):
         batch_size = self.handresult.batch_size
 
         # Selector data
+        hand_verts_r = Pointclouds(points=self.handresult.verts_r)
+        hand_verts_r.estimate_normals(assign_to_self=True)
         predict_dataset = SelectorTestDataset(
             hand_fidxs=self.handresult.fidxs,
             hand_theta=self.handresult.theta,
-            hand_verts=self.handresult.verts_n,
+            hand_verts_n=self.handresult.verts_n,
+            hand_verts_r=hand_verts_r,
         )
         predict_dataloader = DataLoader(
-            predict_dataset, batch_size=batch_size, shuffle=False, pin_memory=True
+            predict_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=SelectorTestData.collate_fn
         )
 
         # Selector inference

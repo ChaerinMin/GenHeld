@@ -377,6 +377,7 @@ class ContactLoss(Module):
                 logger.error(
                     f"ContactGen was used, but hand {hand_fidxs[b]}, object {object_fidxs[b]}, at iter {iter} has no ContactGen result"
                 )
+                raise ValueError
                 continue
 
             # assign colors

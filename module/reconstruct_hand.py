@@ -198,10 +198,9 @@ class ReconstructHand(LightningModule):
         fidxs = data.fidxs
         images = data.images.cpu().numpy()
         inpainted_images = data.inpainted_images
-        # handarm_segs = data.handarm_segs
-        # object_segs = data.object_segs
         hand_theta = data.hand_theta
         hand_verts = data.hand_verts
+        hand_verts_r = data.hand_verts_r
         hand_faces = data.hand_faces
         hand_aux = data.hand_aux
         xyz = data.xyz
@@ -280,6 +279,7 @@ class ReconstructHand(LightningModule):
             dataset=self.hand_dataset,
             theta=hand_theta,
             verts_n=hand_verts_n,  # mano
+            verts_r=hand_verts_r,
             faces=hand_faces,
             aux=hand_aux,
             max_norm=hand_max_norm,

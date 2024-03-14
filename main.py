@@ -7,7 +7,7 @@ import warnings
 import hydra
 import numpy as np
 import pytorch_lightning as pl
-from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
 import torch
 from omegaconf import OmegaConf
@@ -19,6 +19,8 @@ from configs.compare_configs import compare_cfg
 torch.set_float32_matmul_precision("medium")
 
 logger = logging.getLogger(__name__)
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+torch.autograd.set_detect_anomaly(True)
 logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
 warnings.filterwarnings("ignore")
 OmegaConf.register_resolver("div", lambda x, y: float(x) / float(y))
@@ -76,7 +78,7 @@ def main(cfg):
         logger.warning("CPU only, this will be slow!")
 
     if cfg.object_selector == "train":
-        object_selection = instantiate(cfg.object_selector, cfg, recursive=False)
+        object_selection = instantiate(cfg.select_object, cfg=cfg, _recursive_=False)
         callbacks = [
             ModelCheckpoint(
                 dirpath=cfg.selector_ckpt_dir, monitor="val_loss", mode="min", verbose=cfg.debug
@@ -93,10 +95,10 @@ def main(cfg):
         selector = pl.Trainer(
             devices=len(cfg.devices),
             accelerator=accelerator,
-            max_epochs=cfg.object_selector.Nepochs,
+            max_epochs=cfg.select_object.opt.Nepochs,
             enable_checkpointing=True,
             callbacks=callbacks,
-            loggers=loggers,
+            logger=loggers,
             enable_model_summary=True,
             default_root_dir=cfg.output_dir,
             val_check_interval=1.0,  # one epoch
@@ -128,6 +130,7 @@ def main(cfg):
         logger.error(
             f"object_selector should be either train or inference, got {cfg.object_selector}"
         )
+        raise ValueError
 
     return
 

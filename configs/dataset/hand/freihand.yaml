@@ -22,4 +22,6 @@ opt:
       # object_seg: "data/FreiHAND/evaluation/egohos_obj/%08d.png"
     hand:
       path: "data/FreiHAND/evaluation/hifihr_obj/%07d.obj"
-      xyz: "data/FreiHAND/evaluation/hifihr_obj/%07d_pred_xyz.npy"  
+      xyz: "data/FreiHAND/evaluation/hifihr_obj/%07d_pred_xyz.npy"
+    hand_r:
+      path: "data/FreiHAND/evaluation/hifihr_obj/%07d_r.obj"  

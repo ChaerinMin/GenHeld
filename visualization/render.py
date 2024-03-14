@@ -1,7 +1,6 @@
 import logging
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -16,52 +15,6 @@ from pytorch3d.renderer.cameras import PerspectiveCameras
 from pytorch3d.renderer.lighting import DirectionalLights, PointLights
 
 logger = logging.getLogger(__name__)
-
-
-def plot_pointcloud(points, title=""):
-    x, y, z = points.clone().detach().cpu().squeeze().unbind(1)
-    fig = plt.figure(figsize=(5, 5))
-    ax = fig.add_subplot(111, projection="3d")
-    ax.scatter3D(x, z, -y)
-    ax.set_xlabel("x")
-    ax.set_ylabel("z")
-    ax.set_zlabel("y")
-    ax.set_title(title)
-    plt.show()
-
-
-def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blending"):
-    # make mask
-    if not use_alpha:
-        logger.error("Only support use_alpha=True")
-        raise ValueError
-    alpha = foreground[..., 3]
-    mask = alpha > (255 / 2.0)
-    mask = mask * np.array(255, dtype=np.uint8)
-
-    if (
-        foreground.shape[0] != background.shape[0]
-        or foreground.shape[1] != background.shape[1]
-    ):
-        logger.error("Only support foreground and background have the same shape")
-        raise ValueError
-
-    if blend_type == "poisson":
-        center = (foreground.shape[0] // 2, foreground.shape[1] // 2)
-        blended_image = cv2.seamlessClone(
-            foreground[..., :3], background, mask, p=center, flags=cv2.MIXED_CLONE
-        )
-    elif blend_type == "alpha_blending":
-        # alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
-        alpha = alpha.astype(np.float16) / 255.0
-        alpha = alpha[..., None]
-        blended_image = foreground[..., :3] * alpha + background * (1 - alpha)
-        blended_image = blended_image.astype(np.uint8)
-    else:
-        logger.error(f"Unknown blend_type: {blend_type}")
-        raise ValueError
-
-    return blended_image
 
 
 class Renderer:
@@ -116,3 +69,37 @@ class Renderer:
         focal_length = torch.stack([ndc_fx, ndc_fy], dim=-1)
         principal_point = torch.stack([ndc_px, ndc_py], dim=-1)
         return focal_length, principal_point
+
+
+def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blending"):
+    # make mask
+    if not use_alpha:
+        logger.error("Only support use_alpha=True")
+        raise ValueError
+    alpha = foreground[..., 3]
+    mask = alpha > (255 / 2.0)
+    mask = mask * np.array(255, dtype=np.uint8)
+
+    if (
+        foreground.shape[0] != background.shape[0]
+        or foreground.shape[1] != background.shape[1]
+    ):
+        logger.error("Only support foreground and background have the same shape")
+        raise ValueError
+
+    if blend_type == "poisson":
+        center = (foreground.shape[0] // 2, foreground.shape[1] // 2)
+        blended_image = cv2.seamlessClone(
+            foreground[..., :3], background, mask, p=center, flags=cv2.MIXED_CLONE
+        )
+    elif blend_type == "alpha_blending":
+        # alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
+        alpha = alpha.astype(np.float16) / 255.0
+        alpha = alpha[..., None]
+        blended_image = foreground[..., :3] * alpha + background * (1 - alpha)
+        blended_image = blended_image.astype(np.uint8)
+    else:
+        logger.error(f"Unknown blend_type: {blend_type}")
+        raise ValueError
+
+    return blended_image
