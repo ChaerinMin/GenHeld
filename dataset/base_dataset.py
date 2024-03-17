@@ -441,11 +441,11 @@ class SelectorDataset(Dataset):
 
 
 class SelectorTestDataset(Dataset):
-    def __init__(self, hand_fidxs, hand_theta, hand_verts_n, hand_verts_r):
+    def __init__(self, hand_fidxs, hand_theta, hand_verts_r):
         self.hand_fidxs = hand_fidxs
         assert hand_theta.shape[1] == 48  # 3 + 15 * 3
         self.hand_theta = hand_theta
-        self.hand_verts_n = hand_verts_n
+        # self.hand_verts_n = hand_verts_n
         self.hand_verts_r = hand_verts_r
         return
 
@@ -456,7 +456,7 @@ class SelectorTestDataset(Dataset):
         return_dict = dict(
             hand_fidxs=self.hand_fidxs[idx],
             hand_theta=self.hand_theta[idx],
-            hand_verts_n=self.hand_verts_n[idx],
+            # hand_verts_n=self.hand_verts_n[idx],
             hand_verts_r=self.hand_verts_r[idx],
         )
         return return_dict

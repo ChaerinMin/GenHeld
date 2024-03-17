@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import random
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -97,10 +98,6 @@ class TestTimeOptimize(LightningModule):
         return
 
     def on_train_start(self):
-        # randomly select objects
-        # for data in self.object_dataloader:
-        #     data = ObjectData(**data)
-        #     break
         batch_size = self.handresult.batch_size
 
         # Selector data
@@ -109,7 +106,7 @@ class TestTimeOptimize(LightningModule):
         predict_dataset = SelectorTestDataset(
             hand_fidxs=self.handresult.fidxs,
             hand_theta=self.handresult.theta,
-            hand_verts_n=self.handresult.verts_n,
+            # hand_verts_n=self.handresult.verts_n,
             hand_verts_r=hand_verts_r,
         )
         predict_dataloader = DataLoader(
@@ -118,7 +115,7 @@ class TestTimeOptimize(LightningModule):
 
         # Selector inference
         object_selection = instantiate(
-            self.cfg.object_selector, self.cfg, recursive=False
+            self.cfg.object_selector, self.cfg, device=hand_verts_r.device , recursive=False
         )
         selector = pl.Trainer(
             devices=len(self.cfg.devices), accelerator=self.accelerator
@@ -132,7 +129,8 @@ class TestTimeOptimize(LightningModule):
         # load object data
         train_batch = []
         for b in range(batch_size):
-            idx = self.object_dataset.fidxs.index(class_preds[b])
+            class_pick = random.choice(list(class_preds[b]))
+            idx = self.object_dataset.fidxs.index(class_pick)
             train_batch.append(self.object_dataset[idx])
         train_batch = ObjectData.collate_fn(train_batch)
         data = ObjectData(**train_batch)

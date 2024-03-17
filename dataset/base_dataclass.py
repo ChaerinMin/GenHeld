@@ -71,8 +71,6 @@ class HandData:
     hand_aux: NamedTuple = None
 
     def to(self, device):
-        # self.handarm_segs = self.handarm_segs.to(device)
-        # self.object_segs = self.object_segs.to(device)
         self.hand_tehta = self.hand_theta.to(device)
         self.hand_verts = self.hand_verts.to(device)
         self.hand_verts_r = self.hand_verts_r.to(device)
@@ -225,19 +223,19 @@ class ObjectData:
 class SelectorData:
     fidxs: str
     hand_theta: Tensor
-    hand_verts_n: Tensor
+    # hand_verts_n: Tensor
     hand_verts_r: Pointclouds
-    hand_contacts_n: Tensor
+    hand_contacts_r: Tensor
     class_vecs: Tensor
-    object_pcs_n: Pointclouds
+    object_pcs_r: Pointclouds
 
     def to(self, device):
         self.hand_theta = self.hand_theta.to(device)
-        self.hand_verts_n = self.hand_verts_n.to(device)
+        # self.hand_verts_n = self.hand_verts_n.to(device)
         self.hand_verts_r = self.hand_verts_r.to(device)
-        self.hand_contacts_n = self.hand_contacts_n.to(device)
+        self.hand_contacts_r = self.hand_contacts_r.to(device)
         self.class_vecs = self.class_vecs.to(device)
-        self.object_pcs_n = self.object_pcs_n.to(device)
+        self.object_pcs_r = self.object_pcs_r.to(device)
         return self
     
     @staticmethod

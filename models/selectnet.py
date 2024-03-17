@@ -1,13 +1,9 @@
-import math
-
 import torch
 from torch.nn import functional as F
 from pytorch3d.structures import Pointclouds
-from pytorch3d.transforms import Rotate, axis_angle_to_matrix
-from pytorch3d.ops import knn_points
 from torch import nn
 
-from models.pointnet import PointNetPropagation, PointNetSetAbstraction, STNkd
+from models.pointnet import PointNetSetAbstraction, STNkd
 
 
 class ResBlock(nn.Module):
@@ -43,6 +39,39 @@ class ResBlock(nn.Module):
             return self.ll(Xout)
         return Xout
 
+
+class ConvResBlock(nn.Module):
+    def __init__(self, Fin, Fout, dim_hidden=256):
+
+        super(ConvResBlock, self).__init__()
+        self.Fin = Fin
+        self.Fout = Fout
+
+        self.conv1 = nn.Conv1d(Fin, dim_hidden, 1)
+        self.bn1 = nn.BatchNorm1d(dim_hidden)
+
+        self.conv2 = nn.Conv1d(dim_hidden, Fout, 1)
+        self.bn2 = nn.BatchNorm1d(Fout)
+
+        if Fin != Fout:
+            self.conv3 = nn.Conv1d(Fin, Fout, 1)
+
+        self.ll = nn.LeakyReLU(negative_slope=0.2)
+
+    def forward(self, x, final_nl=True):
+        Xin = x if self.Fin == self.Fout else self.ll(self.conv3(x))
+
+        Xout = self.conv1(x)
+        Xout = self.bn1(Xout)
+        Xout = self.ll(Xout)
+
+        Xout = self.conv2(Xout)
+        Xout = self.bn2(Xout)
+        Xout = Xin + Xout
+
+        if final_nl:
+            return self.ll(Xout)
+        return Xout
 
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, key_value_dim):
@@ -172,30 +201,7 @@ class ContactNet(nn.Module):
         self.conv4 = nn.Conv1d(128, 1, 1)
         return
 
-    @staticmethod
-    def create_ellipsoid(center, axes, num_points):
-        x0, y0, z0 = center
-        a, b, c = axes
-
-        # Parametric angles
-        sqrt_n_points = math.sqrt(num_points)
-        assert sqrt_n_points % 1 == 0, "num_points must be a perfect square"
-        sqrt_n_points = int(sqrt_n_points)
-        theta = torch.linspace(0, 2 * math.pi, sqrt_n_points, dtype=center.dtype, device=center.device)
-        phi = torch.linspace(0, math.pi, sqrt_n_points, dtype=center.dtype, device=center.device)
-
-        # Meshgrid for theta and phi
-        theta, phi = torch.meshgrid(theta, phi)
-
-        # Parametric equations of the ellipsoid
-        x = a * torch.cos(theta) * torch.sin(phi) + x0
-        y = b * torch.sin(theta) * torch.sin(phi) + y0
-        z = c * torch.cos(phi) + z0
-
-        ellipsoid = torch.stack([x.flatten(), y.flatten(), z.flatten()], dim=-1)
-        return ellipsoid
-
-    def forward(self, hand_theta, hand_verts_n, hand_verts_r):
+    def forward(self, hand_theta, hand_verts_r):
         # normalize rotation
         hand_theta_r = hand_theta.clone()
         hand_theta_r[:, :3] = 0.0
@@ -220,43 +226,21 @@ class ContactNet(nn.Module):
         x = torch.sigmoid(x)
         x = x.squeeze(2)
 
-        # contact xyz, object base
-        contact_xyzs_n = []
-        object_base_n = []
+        # contact xyz
+        contact_xyzs_r = torch.zeros(batch_size, 778, 3, device=hand_verts_r.device)
         hand_verts_r = hand_verts_r.permute(0, 2, 1).contiguous()
+        num_contacts = []
         for b in range(batch_size):
-            contact_xyz_n = hand_verts_n[b][x[b] >= 0.5]
-            if contact_xyz_n.shape[0] == 0:
-                contact_xyz_n = hand_verts_n[b][-2:]
-            center = torch.mean(contact_xyz_n, dim=0, keepdim=True)
-            min_dist = torch.min(torch.norm(contact_xyz_n - center, dim=1))
-            obj_base_n = torch.rand(self.opt.object.points, 3, device=contact_xyz_n.device) - 0.5
-            obj_base_n = obj_base_n * min_dist  / (torch.norm(obj_base_n, dim=1, keepdim=True) + 1e-6)
-            obj_base_n = obj_base_n + center
-            object_base_n.append(obj_base_n)
-            contact_xyzs_n.append(contact_xyz_n)
-        object_base_n = torch.stack(object_base_n, dim=0)
-        contact_xyzs_n = Pointclouds(contact_xyzs_n)
-
-        # object base features
-        distances, idx_object, _ = knn_points(
-            p1=contact_xyzs_n.points_padded(),
-            p2=object_base_n,
-            lengths1=torch.LongTensor([len(i) for i in contact_xyzs_n.points_list()]).to(contact_xyzs_n.device),
-            lengths2=torch.LongTensor([self.opt.object.points] * batch_size).to(contact_xyzs_n.device),
-            norm=2,
-            K=1,
-        )
-        object_feat_n = torch.zeros_like(object_base_n[..., 0:1])
-        idx_object = idx_object[:, :,0]
-        batch_idx = torch.arange(idx_object.shape[0]).view(-1, 1).expand(-1, idx_object.shape[1])
-        object_feat_n[batch_idx, idx_object, :] = torch.sigmoid(-distances) * 2.
-        object_base_n = torch.cat([object_base_n, object_feat_n], dim=2)
+            n_contacts = int(torch.sum(x[b] >= 0.5))
+            contact_xyzs_r[b, :n_contacts] = hand_verts_r[b][x[b] >= 0.5]
+            num_contacts.append(n_contacts)
+        contact_xyzs_r = Pointclouds(contact_xyzs_r)
+        contact_xyzs_r._num_points_per_cloud = torch.tensor(num_contacts, device=contact_xyzs_r.device)
+        contact_xyzs_r.points_list()
 
         return (
             x,
-            contact_xyzs_n.points_padded(),
-            object_base_n,
+            contact_xyzs_r,
             hand_theta_r,
         )
 
@@ -264,131 +248,124 @@ class ContactNet(nn.Module):
 class SelectObjectNet(nn.Module):
     def __init__(self, opt):
         super().__init__()
-        dim_hand_pose = opt.dim_hand_pose
-        category_hc = opt.category.hc
-        object_hc = opt.object.hc
-        fusion_hc = opt.fusion.hc
+        assert opt.n_obj_points > 2048
         # contact
         self.contact_net = ContactNet(opt)
 
         # encoder
-        self.en_pointnet1 = PointNetObject(1, 3)
-        self.en_pointnet2 = PointNetObject(object_hc, 11)
-        self.en_batchnorm1 = nn.BatchNorm1d(opt.n_class + 3)
-        self.en_resnet1 = ResBlock(opt.n_class + dim_hand_pose, category_hc)
-        self.en_cross1 = CrossAttention(object_hc * 8, category_hc)
-        self.en_resnet2 = ResBlock(
-            max(object_hc * 8, category_hc) + opt.n_class + dim_hand_pose, category_hc
-        )
-        self.en_cross2 = CrossAttention(object_hc * 8, category_hc)
+        self.en_conv1 = nn.Conv1d(int(opt.dim_hand_pose/3)+778, 1024, 1, bias=False)
+        self.en_upconv1 = nn.ConvTranspose1d(3, 3, 3, stride=2, padding=1, output_padding=1)  # 1024 -> 2048
+        # self.en_upconv2 = nn.ConvTranspose1d(3, 3, 3, stride=2, padding=1, output_padding=1)  # 2048 -> 4096
+        self.en_conv2 = nn.Conv1d(2048, opt.n_obj_points, 1)
+        self.en_pointnet1 = PointNetObject(int(512/8), 9)
+
+        self.en_resnet1 = ConvResBlock(1, 64)
+        self.en_resnet2 = ConvResBlock(64, 128)
+        self.en_resnet3 = ConvResBlock(128, 256)
+        self.en_resnet4 = ConvResBlock(256, 512)
+        self.en_maxpool = nn.MaxPool1d(opt.n_class+opt.dim_hand_pose)
 
         # fusion
-        self.fusion_resnet = ResBlock(
-            max(object_hc * 8, category_hc) + object_hc * 8, fusion_hc
-        )
-        self.fusion_mu = nn.Linear(fusion_hc, opt.dim_latent)
-        self.fusion_var = nn.Linear(fusion_hc, opt.dim_latent)
+        self.en_cross1 = CrossAttention(512, 512)
+        self.fusion_resnet = ResBlock(512,512)
+        self.fusion_mu = nn.Linear(512, 512)
+        self.fusion_var = nn.Linear(512, 512)
 
         # decoder
-        self.de_mlp1 = nn.Linear(opt.dim_latent + dim_hand_pose - 3, object_hc * 2)
-        self.de_batchnorm1 = nn.BatchNorm1d(object_hc * 2)
+        self.de_conv0 = nn.Conv1d(3+512, 512, 3, padding=1)
+        self.de_batchnorm1 = nn.BatchNorm1d(512)
         self.de_drop1 = nn.Dropout(0.1)
-        self.de_conv0 = nn.Conv1d(object_hc * 2, opt.object.points, 1)
-        self.de_batchnorm0 = nn.BatchNorm1d(opt.object.points)
-        self.de_pointnet0 = PointNetObject(object_hc, 5)
-        self.de_pointnet1 = PointNetPropagation(
-            in_channel=object_hc * 8 + object_hc * 4, mlp=[object_hc * 8, object_hc * 4]
-        )
-        self.de_pointnet2 = PointNetPropagation(
-            in_channel=object_hc * 4 + object_hc * 2, mlp=[object_hc * 4, object_hc * 2]
-        )
-        self.de_pointnet3 = PointNetPropagation(
-            in_channel=object_hc * 2 + 3,
-            mlp=[object_hc * 2, object_hc * 2],
-        )
-        self.de_conv1 = nn.Conv1d(object_hc * 2, object_hc, 1)
-        self.de_batchnorm2 = nn.BatchNorm1d(object_hc)
+        self.de_conv1 = nn.Conv1d(512, 256, 1)
+        self.de_batchnorm2 = nn.BatchNorm1d(256)
         self.de_drop2 = nn.Dropout(0.1)
-        self.de_conv2 = nn.Conv1d(object_hc, 3, 1)
-        self.de_resnet1 = ResBlock(opt.dim_latent + dim_hand_pose - 3, category_hc)
-        self.de_cross1 = CrossAttention(object_hc * 8, category_hc)
-        self.de_maxpool = nn.MaxPool1d(object_hc * 4)
-        self.de_cross2 = CrossAttention(
-            object_hc * 2,
-            max(category_hc, object_hc * 8) + dim_hand_pose + opt.dim_latent,
-        )
-        self.de_resnet2 = ResBlock(
-            max(category_hc, object_hc * 8) + dim_hand_pose + opt.dim_latent,
-            category_hc,
-        )
-        self.de_mlp2 = nn.Linear(category_hc, opt.n_class)
+        self.de_conv2 = nn.Conv1d(256, 128, 3, padding=1)
+        self.de_batchnorm3 = nn.BatchNorm1d(128)
+        self.de_drop3 = nn.Dropout(0.1)
+        self.de_conv3 = nn.Conv1d(128, 64, 3, padding=1)
+        self.de_batchnorm4 = nn.BatchNorm1d(64)
+        self.de_drop4 = nn.Dropout(0.1)
+        self.de_conv4 = nn.Conv1d(64, 3, 1)
+
+        self.de_resnet1 = ResBlock(512 + opt.dim_hand_pose, 256)
+        self.de_maxpool = nn.MaxPool1d(opt.n_obj_points)
+        self.de_cross1 = CrossAttention(256, 256)
+        self.de_resnet2 = ResBlock(256, 128)
+        self.de_cross2 = CrossAttention(128,128)
+        self.de_resnet3 = ResBlock(128,64)
+        self.de_mlp2 = nn.Linear(64, opt.n_class)
         self.de_softmax = nn.Softmax()
 
         return
 
-    def enc(self, class_vec, hand_theta, contact_xyz, object_pcs, object_normals):
-        batch_size = class_vec.shape[0]
+    def object_upsample(self, hand_theta, contact_xyz_n):
+        batch_size = hand_theta.shape[0]
+        hand_theta_stack = hand_theta.reshape(batch_size, -1, 3)
+        obj_x = torch.cat([hand_theta_stack, contact_xyz_n.points_padded()], 1)
+        obj_x = self.en_conv1(obj_x)
+        obj_x = obj_x.permute(0, 2, 1).contiguous()
+        obj_x = self.en_upconv1(obj_x)
+        obj_x = F.relu(obj_x)
+        # obj_x = self.en_upconv2(obj_x)
+        # obj_x = F.relu(obj_x)
+        obj_x = obj_x.permute(0, 2, 1).contiguous()
+        obj_x = self.en_conv2(obj_x)
+        obj_x = F.relu(obj_x)
+        obj_x = obj_x.permute(0, 2, 1).contiguous()
+        return obj_x
+    
+    def enc(self, class_vec, hand_theta, contact_xyz_r, object_pcs, object_normals):
         object_pcs = object_pcs.points_padded()
         object_pcs = object_pcs.permute(0, 2, 1).contiguous()
+        object_normals = object_normals.permute(0, 2, 1).contiguous()
 
         # object pc
-        hand_theta_stack = hand_theta.reshape(batch_size, -1, 3)
-        obj_f0 = torch.cat([object_normals, hand_theta_stack, contact_xyz], 1)
-        *_, obj_f0 = self.en_pointnet1(obj_f0.permute(0, 2, 1).contiguous(), None)
-        obj_f0 = obj_f0.unsqueeze(2).repeat(1, 1, object_pcs.shape[2])
-        *_, obj_x1 = self.en_pointnet2(object_pcs, obj_f0)
+        obj_x = self.object_upsample(hand_theta, contact_xyz_r)
+        obj_x = torch.cat([obj_x, object_normals], dim=1)
+        *_, obj_x = self.en_pointnet1(object_pcs, obj_x)
 
         # category
-        cate_x0 = torch.cat([class_vec, hand_theta[:, :3]], dim=1).float()
-        cate_x0 = self.en_batchnorm1(cate_x0)
-        cate_x0 = torch.cat([cate_x0, hand_theta[:, 3:]], dim=1)
-        cate_x1 = self.en_resnet1(cate_x0)
-        cate_x1 = self.en_cross1(obj_x1, cate_x1)
-        cate_x1 = self.en_resnet2(torch.cat([cate_x1, cate_x0], dim=1))
+        cate_x = torch.cat([class_vec.unsqueeze(1), hand_theta.unsqueeze(1)], dim=2).float()
+        cate_x = self.en_resnet1(cate_x)
+        cate_x = self.en_resnet2(cate_x)
+        cate_x = self.en_resnet3(cate_x)
+        cate_x = self.en_resnet4(cate_x)
+        cate_x = self.en_maxpool(cate_x).squeeze(2)
 
         # fusion
-        cate_x1 = self.en_cross2(obj_x1, cate_x1)
-        z = self.fusion_resnet(torch.cat([cate_x1, obj_x1], dim=1))
+        z = self.en_cross1(obj_x, cate_x)
+        z = self.fusion_resnet(z)
         z = torch.distributions.normal.Normal(
             self.fusion_mu(z), F.softplus(self.fusion_var(z))
         )
         return z
 
-    def dec(self, z, object_base, hand_theta):
-        object_base = object_base.permute(0, 2, 1).contiguous()
-
+    def dec(self, z, hand_theta, contact_xyz_r):
         # object pc
-        cond = torch.cat([z, hand_theta[:, 3:]], dim=1)
-        cond = self.de_mlp1(cond)
-        cond = F.relu(self.de_batchnorm1(cond))
-        cond = self.de_drop1(cond)
-        cond = self.de_conv0(cond.unsqueeze(2))
-        cond = F.relu(self.de_batchnorm0(cond))
-        cond = cond.permute(0, 2, 1).contiguous()
-        cond = torch.cat([object_base[:, 3:4, :], cond], dim=1)
-        l1_xyz, l1_points, l2_xyz, l2_points, l3_xyz, l3_points = self.de_pointnet0(
-            object_base[:, :3], cond
-        )
-        l3_points = l3_points.unsqueeze(2)
-        l2_points = self.de_pointnet1(l2_xyz, l3_xyz, l2_points, l3_points)
-        l1_points = self.de_pointnet2(l1_xyz, l2_xyz, l1_points, l2_points)
-        object_pred = self.de_pointnet3(
-            object_base[:, :3], l1_xyz, object_base[:, :3], l1_points
-        )
-        object_pred = self.de_conv1(object_pred)
-        object_pred = F.relu(self.de_batchnorm2(object_pred))
-        object_pred = self.de_drop2(object_pred)
-        object_pred = self.de_conv2(object_pred)
-        object_pred = object_base[:, :3, :] + object_pred
+        obj_x = self.object_upsample(hand_theta, contact_xyz_r)
+        z_stack = z.unsqueeze(2).repeat(1, 1, obj_x.shape[2])
+        obj_x = torch.cat([z_stack, obj_x], dim=1)
+        obj_x = self.de_conv0(obj_x)
+        obj_x = F.relu(self.de_batchnorm1(obj_x))
+        obj_x = self.de_drop1(obj_x)
+        obj_x = self.de_conv1(obj_x)
+        obj_x = F.relu(self.de_batchnorm2(obj_x))
+        obj_x1 = self.de_drop2(obj_x)
+        obj_x1 = self.de_conv2(obj_x1)
+        obj_x1 = F.relu(self.de_batchnorm3(obj_x1))
+        object_pred = self.de_drop3(obj_x1)
+        object_pred = self.de_conv3(object_pred)
+        object_pred = F.relu(self.de_batchnorm4(object_pred))
+        object_pred = self.de_drop4(object_pred)
+        object_pred = self.de_conv4(object_pred)
+        object_pred = object_pred.permute(0, 2, 1).contiguous()
 
         # category
-        cate_x = torch.cat([z, hand_theta[:, 3:]], dim=1)
-        category_pred = self.de_resnet1(cate_x)
-        category_pred = self.de_cross1(l3_points.squeeze(2), category_pred)
-        category_pred = torch.cat([category_pred, cate_x, hand_theta[:, :3]], dim=1)
-        l1_feat = self.de_maxpool(l1_points).squeeze(2)
-        category_pred = self.de_cross2(l1_feat, category_pred)
+        category_pred = torch.cat([z, hand_theta], dim=1)
+        category_pred = self.de_resnet1(category_pred)
+        # category_pred = self.de_cross1(self.de_maxpool(obj_x).squeeze(2), category_pred)
         category_pred = self.de_resnet2(category_pred)
+        # category_pred = self.de_cross2(self.de_maxpool(obj_x1).squeeze(2), category_pred)
+        category_pred = self.de_resnet3(category_pred)
         category_pred = self.de_mlp2(category_pred)
         category_pred = self.de_softmax(category_pred)
 

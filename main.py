@@ -55,11 +55,8 @@ def main(cfg):
         os.makedirs(cfg.results_dir, exist_ok=True)
     logger.info(f"Output directory is {cfg.output_dir}")
     cfg.ckpt_dir = os.path.join(cfg.output_dir, "checkpoints")
-    cfg.selector_ckpt_dir = os.path.join(cfg.output_dir, "selector_checkpoints")
     if not os.path.exists(cfg.ckpt_dir):
         os.makedirs(cfg.ckpt_dir)
-    if not os.path.exists(cfg.selector_ckpt_dir):
-        os.makedirs(cfg.selector_ckpt_dir)
 
     # compare config
     if cfg.resume_dir:
@@ -78,10 +75,13 @@ def main(cfg):
         logger.warning("CPU only, this will be slow!")
 
     if cfg.object_selector == "train":
-        object_selection = instantiate(cfg.select_object, cfg=cfg, _recursive_=False)
+        cfg.selector_ckpt_dir = os.path.join(cfg.output_dir, "selector_checkpoints")
+        if not os.path.exists(cfg.selector_ckpt_dir):
+            os.makedirs(cfg.selector_ckpt_dir)
+        object_selection = instantiate(cfg.select_object, cfg=cfg, device=device , _recursive_=False)
         callbacks = [
             ModelCheckpoint(
-                dirpath=cfg.selector_ckpt_dir, monitor="val_loss", mode="min", verbose=cfg.debug
+                dirpath=cfg.selector_ckpt_dir, monitor="val_category_acc", mode="max", verbose=cfg.debug
             ),
             LearningRateMonitor(logging_interval="step")
         ]
@@ -95,7 +95,7 @@ def main(cfg):
         selector = pl.Trainer(
             devices=len(cfg.devices),
             accelerator=accelerator,
-            max_epochs=cfg.select_object.opt.Nepochs,
+            max_epochs=cfg.select_object.opt.train.Nepochs,
             enable_checkpointing=True,
             callbacks=callbacks,
             logger=loggers,
@@ -109,6 +109,7 @@ def main(cfg):
         else:
             selector.fit(object_selection)
     elif cfg.object_selector == "inference":
+        cfg.selector_ckpt_dir = os.path.dirname(cfg.selector_ckpt)
         # main
         reconstruction = ReconstructHand(cfg, accelerator, device)
         reconstructor = pl.Trainer(
