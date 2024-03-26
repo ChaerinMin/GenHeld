@@ -1,31 +1,31 @@
-from dataclasses import dataclass
+import glob
 import logging
 import os
-from typing import Any, NamedTuple
-import glob
 import re
+from collections import namedtuple
+from dataclasses import dataclass
+from typing import Any, NamedTuple
 
 import numpy as np
-import torch
+import pandas as pd
 import pytorch_lightning as pl
+import torch
+import trimesh
 from hydra.utils import instantiate
 from PIL import Image
 from pytorch_lightning import LightningModule
 from pytorch_lightning.callbacks import LearningRateMonitor
+from pytorch_lightning.loggers import WandbLogger
 from rich.console import Console
+from scipy.optimize import minimize
 from torch import Tensor
 from torch.utils.data import DataLoader
-from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data.sampler import Sampler
-import trimesh
-from scipy.optimize import minimize
-import pandas as pd
 
 from dataset import HandData, _P3DFaces
 from module.testtime_optimize import TestTimeOptimize
-from visualization import Renderer
 from utils import batch_normalize_mesh
-
+from visualization import Renderer
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -198,9 +198,9 @@ class ReconstructHand(LightningModule):
         fidxs = data.fidxs
         images = data.images.cpu().numpy()
         inpainted_images = data.inpainted_images
-        hand_theta = data.hand_theta
         hand_verts = data.hand_verts
-        hand_verts_r = data.hand_verts_r
+        mano_verts_r = data.mano_verts_r
+        mano_joints_r = data.mano_joints_r
         hand_faces = data.hand_faces
         hand_aux = data.hand_aux
         xyz = data.xyz
@@ -233,9 +233,7 @@ class ReconstructHand(LightningModule):
         # normalize to center
         hand_original_verts = hand_verts.clone()
         hand_original_faces = hand_faces
-        hand_verts_n, hand_center, hand_max_norm = batch_normalize_mesh(
-            hand_verts
-        )
+        hand_verts_n, hand_center, hand_max_norm = batch_normalize_mesh(hand_verts)
         for b in range(batch_size):
             logger.debug(
                 f"hand {fidxs[b]}, center: {hand_center[b]}, max_norm: {hand_max_norm[b]:.3f}"
@@ -273,14 +271,14 @@ class ReconstructHand(LightningModule):
         renderer = Renderer(self.device, image_size, self.hifihr_intrinsics)
 
         # give data
-        handresult = HandResult(
+        handresult = dict(
             batch_size=hand_verts.shape[0],
             fidxs=fidxs,
             dataset=self.hand_dataset,
-            theta=hand_theta,
             verts_n=hand_verts_n,  # mano
-            verts_r=hand_verts_r,
             faces=hand_faces,
+            mano_verts_r=mano_verts_r,
+            mano_joints_r=mano_joints_r,
             aux=hand_aux,
             max_norm=hand_max_norm,
             center=hand_center,
@@ -289,6 +287,8 @@ class ReconstructHand(LightningModule):
             renderer=renderer,
             inpainted_images=inpainted_images,
         )
+        HandResult = namedtuple("HandResult", list(handresult.keys()))
+        handresult = HandResult(**handresult)
         return handresult
 
     def training_step(self, batch, batch_idx):
@@ -379,19 +379,3 @@ class ReconstructHand(LightningModule):
         logger.info(f"Saved metrics to {save_excel_path}")
 
         return
-
-
-@dataclass
-class HandResult:
-    batch_size: int
-    fidxs: Tensor
-    dataset: Any
-    verts_n: Tensor
-    faces: NamedTuple
-    aux: NamedTuple
-    max_norm: Tensor
-    center: Tensor
-    original_verts: Tensor
-    original_faces: Tensor
-    renderer: Any
-    inpainted_images: np.ndarray

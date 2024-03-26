@@ -1,7 +1,8 @@
+import numpy as np
 import torch
-from torch.nn import functional as F
 from pytorch3d.structures import Pointclouds
 from torch import nn
+from torch.nn import functional as F
 
 from models.pointnet import PointNetSetAbstraction, STNkd
 
@@ -72,6 +73,7 @@ class ConvResBlock(nn.Module):
         if final_nl:
             return self.ll(Xout)
         return Xout
+
 
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, key_value_dim):
@@ -183,13 +185,13 @@ class PointNetContact(nn.Module):
 
 
 class ContactNet(nn.Module):
-    def __init__(self, opt):
+    def __init__(self, opt, dim_pos_enc):
         super().__init__()
         self.opt = opt
         self.pointnet = PointNetContact(
             global_feat=False, feature_transform=False, channel=6
         )
-        self.convfuse = nn.Conv1d(778 + 48, 778, 1)
+        self.convfuse = nn.Conv1d(778 + dim_pos_enc, 778, 1)
         self.bnfuse = nn.BatchNorm1d(778)
 
         self.conv1 = nn.Conv1d(1088, 512, 1)
@@ -201,20 +203,20 @@ class ContactNet(nn.Module):
         self.conv4 = nn.Conv1d(128, 1, 1)
         return
 
-    def forward(self, hand_theta, hand_verts_r):
-        # normalize rotation
-        hand_theta_r = hand_theta.clone()
-        hand_theta_r[:, :3] = 0.0
+    def forward(self, joints_encoded, hand_verts_r):
         hand_normals_r = hand_verts_r.normals_padded()
         hand_verts_r = hand_verts_r.points_padded()
 
         # run
-        batch_size = hand_theta_r.shape[0]
+        batch_size = joints_encoded.shape[0]
         hand_verts_r = hand_verts_r.permute(0, 2, 1).contiguous()
         hand_normals_r = hand_normals_r.permute(0, 2, 1).contiguous()
         x_pc = torch.cat([hand_verts_r, hand_normals_r], dim=1)
         x_pc, *_ = self.pointnet(x_pc)
-        x = torch.cat([x_pc, hand_theta_r.view(batch_size, 1, -1).repeat(1, x_pc.shape[1], 1)], dim=2)
+        x = torch.cat(
+            [x_pc, joints_encoded.view(batch_size, 1, -1).repeat(1, x_pc.shape[1], 1)],
+            dim=2,
+        )
         x = x.permute(0, 2, 1).contiguous()
         x = F.relu(self.bnfuse(self.convfuse(x)))
         x = x.permute(0, 2, 1).contiguous()
@@ -235,44 +237,68 @@ class ContactNet(nn.Module):
             contact_xyzs_r[b, :n_contacts] = hand_verts_r[b][x[b] >= 0.5]
             num_contacts.append(n_contacts)
         contact_xyzs_r = Pointclouds(contact_xyzs_r)
-        contact_xyzs_r._num_points_per_cloud = torch.tensor(num_contacts, device=contact_xyzs_r.device)
+        contact_xyzs_r._num_points_per_cloud = torch.tensor(
+            num_contacts, device=contact_xyzs_r.device
+        )
         contact_xyzs_r.points_list()
 
         return (
             x,
             contact_xyzs_r,
-            hand_theta_r,
         )
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, num_freqs=4):
+        super().__init__()
+        self.out_dim_ = (2 * num_freqs * 3) + 3
+        self.coeffs_ = 2.0 ** (np.arange(num_freqs))
+
+    def forward(self, x):
+        outputs = [x]
+        for i, coeff in enumerate(self.coeffs_):
+            outputs.append(torch.sin(x * coeff))
+            outputs.append(torch.cos(x * coeff))
+        return torch.cat(outputs, -1)
+
+    @property
+    def out_dim(self):
+        return self.out_dim_
 
 
 class SelectObjectNet(nn.Module):
     def __init__(self, opt):
         super().__init__()
         assert opt.n_obj_points > 2048
+        # positional encoding
+        self.pos_enc = PositionalEncoding()
+        dim_pos_enc = opt.dim_joints * self.pos_enc.out_dim 
+
         # contact
-        self.contact_net = ContactNet(opt)
+        self.contact_net = ContactNet(opt, dim_pos_enc=dim_pos_enc)
 
         # encoder
-        self.en_conv1 = nn.Conv1d(int(opt.dim_hand_pose/3)+778, 1024, 1, bias=False)
-        self.en_upconv1 = nn.ConvTranspose1d(3, 3, 3, stride=2, padding=1, output_padding=1)  # 1024 -> 2048
-        # self.en_upconv2 = nn.ConvTranspose1d(3, 3, 3, stride=2, padding=1, output_padding=1)  # 2048 -> 4096
+        self.en_conv1 = nn.Conv1d(int(dim_pos_enc / 3) + 778, 1024, 1, bias=False)
+        self.en_upconv1 = nn.ConvTranspose1d(
+            3, 3, 3, stride=2, padding=1, output_padding=1
+        )  # 1024 -> 2048
         self.en_conv2 = nn.Conv1d(2048, opt.n_obj_points, 1)
-        self.en_pointnet1 = PointNetObject(int(512/8), 9)
+        self.en_pointnet1 = PointNetObject(int(512 / 8), 9)
 
         self.en_resnet1 = ConvResBlock(1, 64)
         self.en_resnet2 = ConvResBlock(64, 128)
         self.en_resnet3 = ConvResBlock(128, 256)
         self.en_resnet4 = ConvResBlock(256, 512)
-        self.en_maxpool = nn.MaxPool1d(opt.n_class+opt.dim_hand_pose)
+        self.en_maxpool = nn.MaxPool1d(opt.n_class + dim_pos_enc)
 
         # fusion
         self.en_cross1 = CrossAttention(512, 512)
-        self.fusion_resnet = ResBlock(512,512)
+        self.fusion_resnet = ResBlock(512, 512)
         self.fusion_mu = nn.Linear(512, 512)
         self.fusion_var = nn.Linear(512, 512)
 
         # decoder
-        self.de_conv0 = nn.Conv1d(3+512, 512, 3, padding=1)
+        self.de_conv0 = nn.Conv1d(3 + 512, 512, 3, padding=1)
         self.de_batchnorm1 = nn.BatchNorm1d(512)
         self.de_drop1 = nn.Dropout(0.1)
         self.de_conv1 = nn.Conv1d(512, 256, 1)
@@ -286,45 +312,45 @@ class SelectObjectNet(nn.Module):
         self.de_drop4 = nn.Dropout(0.1)
         self.de_conv4 = nn.Conv1d(64, 3, 1)
 
-        self.de_resnet1 = ResBlock(512 + opt.dim_hand_pose, 256)
+        self.de_resnet1 = ResBlock(512 + dim_pos_enc, 256)
         self.de_maxpool = nn.MaxPool1d(opt.n_obj_points)
         self.de_cross1 = CrossAttention(256, 256)
         self.de_resnet2 = ResBlock(256, 128)
-        self.de_cross2 = CrossAttention(128,128)
-        self.de_resnet3 = ResBlock(128,64)
+        self.de_cross2 = CrossAttention(128, 128)
+        self.de_resnet3 = ResBlock(128, 64)
         self.de_mlp2 = nn.Linear(64, opt.n_class)
         self.de_softmax = nn.Softmax()
 
         return
 
-    def object_upsample(self, hand_theta, contact_xyz_n):
-        batch_size = hand_theta.shape[0]
-        hand_theta_stack = hand_theta.reshape(batch_size, -1, 3)
-        obj_x = torch.cat([hand_theta_stack, contact_xyz_n.points_padded()], 1)
+    def object_upsample(self, joints_encoded, contact_xyz_n):
+        batch_size = joints_encoded.shape[0]
+        joints_encoded = joints_encoded.reshape(batch_size, -1, 3)
+        obj_x = torch.cat([joints_encoded, contact_xyz_n.points_padded()], 1)
         obj_x = self.en_conv1(obj_x)
         obj_x = obj_x.permute(0, 2, 1).contiguous()
         obj_x = self.en_upconv1(obj_x)
         obj_x = F.relu(obj_x)
-        # obj_x = self.en_upconv2(obj_x)
-        # obj_x = F.relu(obj_x)
         obj_x = obj_x.permute(0, 2, 1).contiguous()
         obj_x = self.en_conv2(obj_x)
         obj_x = F.relu(obj_x)
         obj_x = obj_x.permute(0, 2, 1).contiguous()
         return obj_x
-    
-    def enc(self, class_vec, hand_theta, contact_xyz_r, object_pcs, object_normals):
+
+    def enc(self, class_vec, joints_encoded, contact_xyz_r, object_pcs, object_normals):
         object_pcs = object_pcs.points_padded()
         object_pcs = object_pcs.permute(0, 2, 1).contiguous()
         object_normals = object_normals.permute(0, 2, 1).contiguous()
 
         # object pc
-        obj_x = self.object_upsample(hand_theta, contact_xyz_r)
+        obj_x = self.object_upsample(joints_encoded, contact_xyz_r)
         obj_x = torch.cat([obj_x, object_normals], dim=1)
         *_, obj_x = self.en_pointnet1(object_pcs, obj_x)
 
         # category
-        cate_x = torch.cat([class_vec.unsqueeze(1), hand_theta.unsqueeze(1)], dim=2).float()
+        cate_x = torch.cat(
+            [class_vec.unsqueeze(1), joints_encoded.unsqueeze(1)], dim=2
+        ).float()
         cate_x = self.en_resnet1(cate_x)
         cate_x = self.en_resnet2(cate_x)
         cate_x = self.en_resnet3(cate_x)
@@ -339,9 +365,9 @@ class SelectObjectNet(nn.Module):
         )
         return z
 
-    def dec(self, z, hand_theta, contact_xyz_r):
+    def dec(self, z, joints_encoded, contact_xyz_r):
         # object pc
-        obj_x = self.object_upsample(hand_theta, contact_xyz_r)
+        obj_x = self.object_upsample(joints_encoded, contact_xyz_r)
         z_stack = z.unsqueeze(2).repeat(1, 1, obj_x.shape[2])
         obj_x = torch.cat([z_stack, obj_x], dim=1)
         obj_x = self.de_conv0(obj_x)
@@ -360,14 +386,11 @@ class SelectObjectNet(nn.Module):
         object_pred = object_pred.permute(0, 2, 1).contiguous()
 
         # category
-        category_pred = torch.cat([z, hand_theta], dim=1)
+        category_pred = torch.cat([z, joints_encoded], dim=1)
         category_pred = self.de_resnet1(category_pred)
-        # category_pred = self.de_cross1(self.de_maxpool(obj_x).squeeze(2), category_pred)
         category_pred = self.de_resnet2(category_pred)
-        # category_pred = self.de_cross2(self.de_maxpool(obj_x1).squeeze(2), category_pred)
         category_pred = self.de_resnet3(category_pred)
         category_pred = self.de_mlp2(category_pred)
         category_pred = self.de_softmax(category_pred)
 
         return category_pred, object_pred
-

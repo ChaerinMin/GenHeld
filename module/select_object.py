@@ -3,20 +3,19 @@ import os
 import pickle
 
 import numpy as np
+import open3d as o3d
 import torch
 import yaml
-import open3d as o3d
-from matplotlib import pyplot as plt
 from hydra.utils import instantiate
+from matplotlib import pyplot as plt
+from pytorch3d.ops import iterative_closest_point
+from pytorch3d.structures import Pointclouds
 from pytorch_lightning import LightningModule
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from pytorch3d.structures import Pointclouds
 
 from dataset import SelectorData
-from utils import get_NN
 from models.selectnet import SelectObjectNet
-from visualization import bones, bone_colors
 from submodules.HiFiHR.utils.manopth.manolayer import ManoLayer
 
 logger = logging.getLogger(__name__)
@@ -46,16 +45,19 @@ class SelectObject(LightningModule):
             fidxs = selector_dataset.fidxs
             val_inds = []
             for cls in selector_dataset.class2fidxs.values():
-                val_inds.append(fidxs.index(np.random.choice(cls, 1)))
+                if len(cls) < self.opt.val.n_per_class:
+                    logger.error(
+                        f"Samples in class {cls} has fewer than {self.opt.val.n_per_class} samples"
+                    )
+                    raise ValueError
+                val_inds.append(
+                    fidxs.index(np.random.choice(cls, self.opt.val.n_per_class))
+                )
             train_inds = list(set(range(len(selector_dataset))) - set(val_inds))
             val_inds = np.random.permutation(val_inds)
             train_inds = np.random.permutation(train_inds)
             self.train_dataset = torch.utils.data.Subset(selector_dataset, train_inds)
             self.val_dataset = torch.utils.data.Subset(selector_dataset, val_inds)
-            # val_size = int(len(selector_dataset) * self.opt.val.ratio)
-            # self.train_dataset, self.val_dataset = torch.utils.data.random_split(
-            #     selector_dataset, [len(selector_dataset) - val_size, val_size]
-            # )
             self.mano_f = selector_dataset.mano_f
         dataloader = DataLoader(
             self.train_dataset,
@@ -77,16 +79,19 @@ class SelectObject(LightningModule):
             fidxs = selector_dataset.fidxs
             val_inds = []
             for cls in selector_dataset.class2fidxs.values():
-                val_inds.append(fidxs.index(np.random.choice(cls, 1)[0]))
+                if len(cls) < self.opt.val.n_per_class:
+                    logger.error(
+                        f"Samples in class {cls} has fewer than {self.opt.val.n_per_class} samples"
+                    )
+                    raise ValueError
+                val_inds.append(
+                    fidxs.index(np.random.choice(cls, self.opt.val.n_per_class)[0])
+                )
             train_inds = list(set(range(len(selector_dataset))) - set(val_inds))
             val_inds = np.sort(val_inds)
             train_inds = np.sort(train_inds)
             self.train_dataset = torch.utils.data.Subset(selector_dataset, train_inds)
             self.val_dataset = torch.utils.data.Subset(selector_dataset, val_inds)
-            # val_size = int(len(selector_dataset) * self.opt.val.ratio)
-            # self.train_dataset, self.val_dataset = torch.utils.data.random_split(
-            #     selector_dataset, [len(selector_dataset) - val_size, val_size]
-            # )
             self.mano_f = selector_dataset.mano_f
         dataloader = DataLoader(
             self.val_dataset,
@@ -104,15 +109,8 @@ class SelectObject(LightningModule):
             lr=self.opt.train.lr,
             weight_decay=self.opt.train.weight_decay,
         )
-        lr_scheduler_config = {
-            "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer),
-            "interval": "step",
-            "frequency": self.opt.val.period,
-            "monitor": "val_category_acc",
-            "mode": "max",
-            "strict": True,
-        }
-        return {"optimizer": optimizer, "lr_scheduler": lr_scheduler_config}
+        lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer)
+        return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
     def on_fit_start(self):
         self.kl_annealing = max(1.0 / self.opt.loss.kl_annealing_epoch, 1.0)
@@ -141,28 +139,28 @@ class SelectObject(LightningModule):
     def forward(self, batch):
         data = SelectorData(**batch)
         fidxs = data.fidxs
-        hand_theta = data.hand_theta
-        # hand_verts_n = data.hand_verts_n
         hand_verts_r = data.hand_verts_r
-        hand_contacts_n = r = data.hand_contacts_r
+        hand_joints_r = data.hand_joints_r
+        hand_contacts_r = data.hand_contacts_r
         class_vecs = data.class_vecs
         object_pcs_r = data.object_pcs_r
+        batch_size = class_vecs.shape[0]
 
         # encode - decode
+        joints_encoded = self.model.pos_enc(hand_joints_r.view(-1, 3)).view(batch_size, -1)
         (
             contact_pred,
             contact_xyz_r,
-            hand_theta_r,
-        ) = self.model.contact_net(hand_theta, hand_verts_r)
+        ) = self.model.contact_net(joints_encoded, hand_verts_r)
         z = self.model.enc(
             class_vecs,
-            hand_theta,
+            joints_encoded,
             contact_xyz_r,
             object_pcs_r,
             object_pcs_r.normals_padded(),
         )
         z_s = z.rsample()
-        class_pred, object_pred_r = self.model.dec(z_s, hand_theta, contact_xyz_r)
+        class_pred, object_pred_r = self.model.dec(z_s, joints_encoded, contact_xyz_r)
 
         # loss
         loss, loss_dict = self.loss(
@@ -171,8 +169,7 @@ class SelectObject(LightningModule):
             object_pred_r,
             object_pcs_r.points_padded(),
             contact_pred,
-            hand_contacts_n,
-            contact_xyz_r,
+            hand_contacts_r,
             z,
         )
 
@@ -183,7 +180,6 @@ class SelectObject(LightningModule):
         outputs = dict(
             object_pred_r=object_pred_r,
             contact_xyz_r=contact_xyz_r,
-            hand_theta_r=hand_theta_r,
             class_pred=class_pred,
             class_gt=class_vecs,
         )
@@ -204,27 +200,30 @@ class SelectObject(LightningModule):
         val_loss_dict = {}
         for k, v in loss_dict.items():
             val_loss_dict[f"val/{k}"] = v
+        val_loss_dict["val_category_acc"] = loss_dict["category_acc"]
         self.log_dict(
             val_loss_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True
         )
-        outputs["val_category_acc"] = loss_dict["category_acc"]
+        outputs["val_loss"] = loss
         return outputs
 
     def predict_step(self, batch):
         hand_fidxs = batch["hand_fidxs"]
-        hand_theta = batch["hand_theta"]
         hand_verts_r = batch["hand_verts_r"]
-        test_batch_size = hand_theta.shape[0]
+        hand_joints_r = batch["hand_joints_r"]
+        test_batch_size = hand_fidxs.shape[0]
 
         # decode
+        joints_encoded = self.model.pos_enc(hand_joints_r.reshape(-1, 3)).reshape(
+            test_batch_size, -1
+        )
         (
             contact_pred,
             contact_xyz_r,
-            hand_theta_r,
-        ) = self.model.contact_net(hand_theta, hand_verts_r)
+        ) = self.model.contact_net(joints_encoded, hand_verts_r)
         z_gen = np.random.normal(0.0, 1.0, size=(test_batch_size, self.opt.dim_latent))
-        z_gen = torch.tensor(z_gen, dtype=hand_theta.dtype).to(hand_theta.device)
-        class_pred, object_pred_r = self.model.dec(z_gen, hand_theta, contact_xyz_r)
+        z_gen = torch.tensor(z_gen, dtype=contact_xyz_r.dtype).to(contact_xyz_r.device)
+        class_pred, object_pred_r = self.model.dec(z_gen, joints_encoded, contact_xyz_r)
         object_pred_r = object_pred_r.permute(0, 2, 1).contiguous()
 
         # logging & visualization
@@ -235,7 +234,6 @@ class SelectObject(LightningModule):
             verts_gt=None,
             contact_pred=contact_pred,
             contact_gt=None,
-            contact_xyz=contact_xyz_r,
             z=None,
             unsupervised_only=True,
         )
@@ -244,12 +242,6 @@ class SelectObject(LightningModule):
         )
         self.visualize(
             object_pred_r, contact_xyz_r, hand_fidxs, class_pred, class_gt=None
-        )
-        self.visualize_debug(
-            hand_theta,
-            hand_theta_r,
-            hand_verts_r.points_padded(),
-            hand_fidxs,
         )
 
         # output
@@ -266,7 +258,6 @@ class SelectObject(LightningModule):
         verts_gt,
         contact_pred,
         contact_gt,
-        contact_xyz,
         z=None,
         unsupervised_only=False,
     ):
@@ -290,12 +281,24 @@ class SelectObject(LightningModule):
             )
 
             # object pc
-            objectpoint_loss = F.mse_loss(
-                verts_pred.view(batch_size, -1), verts_gt.view(batch_size, -1)
-            )
+            if self.opt.loss.objectpoint == "mse":
+                objectpoint_loss = F.mse_loss(
+                    verts_pred.view(batch_size, -1), verts_gt.view(batch_size, -1)
+                )
+            elif self.opt.loss.objectpoint == "icp":
+                with torch.no_grad():
+                    icpsolution = iterative_closest_point(
+                        verts_gt, verts_pred, allow_reflection=True
+                    )
+                objectpoint_loss = F.mse_loss(
+                    verts_pred.view(batch_size, -1), icpsolution.Xt.view(batch_size, -1)
+                )
+            else:
+                logger.error(f"Invalid objectpoint loss: {self.opt.loss.objectpoint}")
+                raise ValueError
 
             # contact
-            contact_loss = F.huber_loss(contact_pred, contact_gt)
+            contact_loss = F.cross_entropy(contact_pred, contact_gt)
             contact_acc = (
                 torch.sum((contact_pred > thres) == (contact_gt > thres))
                 / contact_gt.numel()
@@ -333,20 +336,6 @@ class SelectObject(LightningModule):
             loss_dict["contact_loss"] = contact_loss
             loss_dict["contact_acc"] = contact_acc
             loss_dict["kl_loss"] = kl_loss
-
-        # unsupervised loss
-        nn = []
-        contact_xyz = contact_xyz.points_list()
-        for b in range(batch_size):
-            nearest, _ = get_NN(contact_xyz[b].unsqueeze(0), verts_pred[b].unsqueeze(0))
-            nn.append(nearest.squeeze(0))
-        nn = torch.cat(nn, dim=0)
-        nn = 100.0 * torch.sqrt(nn)
-        hand_contact = 1.0 - 2 * (torch.sigmoid(nn * 2) - 0.5)
-        consistency_loss = torch.mean(1.0 - hand_contact)
-        consistency_acc = torch.sum(hand_contact > thres) / hand_contact.numel()
-        loss = loss + self.opt.loss.consistency_weight * consistency_loss
-        loss_dict["consistency_acc"] = consistency_acc
 
         loss_dict["loss"] = loss
         return loss, loss_dict
@@ -395,6 +384,9 @@ class SelectObject(LightningModule):
         contact_xyz_r = contact_xyz_r.cpu().points_list()
         for b in range(batch_size):
             pc = contact_xyz_r[b].numpy()
+            if pc.shape[0] == 0:
+                logger.warning(f"Empty contact xyz for hand {fidxs[b]}")
+                continue
             pc = o3d.utility.Vector3dVector(pc)
             pc = o3d.geometry.PointCloud(pc)
             pc.paint_uniform_color([1, 0, 0])
@@ -436,85 +428,6 @@ class SelectObject(LightningModule):
                     f.write(str(torch.argmax(class_gt[b]).item()))
         return
 
-    def visualize_debug(
-        self,
-        hand_theta,
-        hand_theta_r,
-        hand_verts_r,
-        fidxs,
-        mode=None,
-    ):
-        batch_size = hand_theta.shape[0]
-        save_dir = os.path.join(self.cfg.output_dir, "selector_training")
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-        if mode == "val":
-            sign = "val_"
-        else:
-            sign = ""
-
-        # hand theta
-        _, joints = self.manolayer(hand_theta)
-        _, joints_r = self.manolayer(hand_theta_r)
-        joints = joints.cpu()
-        joints_r = joints_r.cpu()
-        for b in range(batch_size):
-            points = o3d.utility.Vector3dVector(joints[b])
-            lines = o3d.utility.Vector2iVector(bones)
-            colors = np.array(bone_colors * 255)
-            line_set = o3d.geometry.LineSet(points, lines)
-            line_set.colors = o3d.utility.Vector3dVector(colors)
-            save_path = os.path.join(
-                save_dir,
-                f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_hand_theta.ply",
-            )
-            o3d.io.write_line_set(save_path, line_set)
-            logger.info(f"Saved {save_path}")
-        for b in range(batch_size):
-            points = o3d.utility.Vector3dVector(joints_r[b])
-            lines = o3d.utility.Vector2iVector(bones)
-            colors = np.array(bone_colors)
-            line_set = o3d.geometry.LineSet(points, lines)
-            line_set.colors = o3d.utility.Vector3dVector(colors)
-            save_path = os.path.join(
-                save_dir,
-                f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_hand_theta_r.ply",
-            )
-            o3d.io.write_line_set(save_path, line_set)
-            logger.info(f"Saved {save_path}")
-
-        # hand verts (ordered)
-        color = plt.cm.viridis(np.linspace(0, 1, hand_verts_r.shape[1]))[
-            :, :-1
-        ]  # no alpha channel
-        # hand_verts_n = hand_verts_n.cpu()
-        # for b in range(batch_size):
-        #     vertices = o3d.utility.Vector3dVector(hand_verts_n[b])
-        #     faces = o3d.utility.Vector3iVector(self.mano_f)
-        #     mesh = o3d.geometry.TriangleMesh(vertices, faces)
-        #     mesh.vertex_colors = o3d.utility.Vector3dVector(color)
-        #     save_path = os.path.join(save_dir, f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_hand_verts_n.ply")
-        #     o3d.io.write_triangle_mesh(save_path, mesh)
-        #     logger.info(f"Saved {save_path}")
-
-        # hand verts r
-        hand_verts_r = hand_verts_r.cpu()
-        for b in range(batch_size):
-            vertices = o3d.utility.Vector3dVector(hand_verts_r[b])
-            faces = o3d.utility.Vector3iVector(self.mano_f)
-            mesh = o3d.geometry.TriangleMesh(vertices, faces)
-            mesh.vertex_colors = o3d.utility.Vector3dVector(color)
-            save_path = os.path.join(
-                save_dir,
-                f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_hand_verts_r.ply",
-            )
-            o3d.io.write_triangle_mesh(save_path, mesh)
-            logger.info(f"Saved {save_path}")
-
-        return
-
     def on_validation_batch_end(self, outputs, batch, batch_idx):
         if self.current_epoch % self.opt.val.vis_epoch == 0:
             self.visualize(
@@ -523,14 +436,6 @@ class SelectObject(LightningModule):
                 batch["fidxs"],
                 outputs["class_pred"],
                 outputs["class_gt"],
-                mode="val",
-            )
-        if self.current_epoch % self.opt.val.vis_debug_epoch == 0:
-            self.visualize_debug(
-                batch["hand_theta"],
-                outputs["hand_theta_r"],
-                batch["hand_verts_r"].points_padded(),
-                batch["fidxs"],
                 mode="val",
             )
         return
@@ -555,14 +460,6 @@ class SelectObject(LightningModule):
                 np.array(batch["fidxs"])[samples],
                 outputs["class_pred"],
                 outputs["class_gt"],
-                mode="train",
-            )
-        if self.current_epoch % self.opt.train.vis_debug_epoch == 0:
-            self.visualize_debug(
-                batch["hand_theta"][samples],
-                outputs["hand_theta_r"][samples],
-                batch["hand_verts_r"].points_padded()[samples],
-                np.array(batch["fidxs"])[samples],
                 mode="train",
             )
         return

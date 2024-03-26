@@ -1,6 +1,6 @@
 _target_: dataset.selector_dataset.DexYCBDataset
 
 opt:
-  refresh_data: True
+  refresh_data: False
   path: "data/DexYCB"
   mano_model: "assets/mano/MANO_RIGHT.pkl"

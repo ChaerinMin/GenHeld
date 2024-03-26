@@ -1,6 +1,8 @@
 _target_: dataset.hand_dataset.FreiHANDDataset
 
 opt:
+  refresh_data: True
+
   image: 
     path: "data/FreiHAND/evaluation/rgb/%08d.jpg"
 
@@ -23,5 +25,8 @@ opt:
     hand:
       path: "data/FreiHAND/evaluation/hifihr_obj/%07d.obj"
       xyz: "data/FreiHAND/evaluation/hifihr_obj/%07d_pred_xyz.npy"
-    hand_r:
+    mano_r:
       path: "data/FreiHAND/evaluation/hifihr_obj/%07d_r.obj"  
+      joint: "data/FreiHAND/evaluation/hifihr_obj/%07d_r_joints.npy"
+      joint_vis: "data/FreiHAND/evaluation/hifihr_obj/%07d_r_joints_vis.ply"
+      bone_vis: "data/FreiHAND/evaluation/hifihr_obj/%07d_r_bone_vis.ply"

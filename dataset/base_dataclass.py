@@ -60,20 +60,18 @@ class PaddedTensor:
 class HandData:
     fidxs: int
     images: Tensor
-    # handarm_segs: Tensor
-    # object_segs: Tensor
-    hand_theta: Tensor
     hand_verts: Tensor
-    hand_verts_r: Tensor
     hand_faces: NamedTuple
+    mano_verts_r: Tensor
+    mano_joints_r: Tensor
     xyz: Tensor = None
     inpainted_images: Tensor = None
     hand_aux: NamedTuple = None
 
     def to(self, device):
-        self.hand_tehta = self.hand_theta.to(device)
         self.hand_verts = self.hand_verts.to(device)
-        self.hand_verts_r = self.hand_verts_r.to(device)
+        self.mano_verts_r = self.mano_verts_r.to(device)
+        self.mano_joints_r = self.mano_joints_r.to(device)
         self.xyz = self.xyz.to(device)
 
         # to(device) of NamedTuple
@@ -222,17 +220,15 @@ class ObjectData:
 @dataclass
 class SelectorData:
     fidxs: str
-    hand_theta: Tensor
-    # hand_verts_n: Tensor
     hand_verts_r: Pointclouds
+    hand_joints_r: Tensor
     hand_contacts_r: Tensor
     class_vecs: Tensor
     object_pcs_r: Pointclouds
 
     def to(self, device):
-        self.hand_theta = self.hand_theta.to(device)
-        # self.hand_verts_n = self.hand_verts_n.to(device)
         self.hand_verts_r = self.hand_verts_r.to(device)
+        self.hand_joints_r = self.hand_joints_r.to(device)
         self.hand_contacts_r = self.hand_contacts_r.to(device)
         self.class_vecs = self.class_vecs.to(device)
         self.object_pcs_r = self.object_pcs_r.to(device)

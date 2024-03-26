@@ -6,17 +6,20 @@ import random
 
 import cv2
 import numpy as np
+import open3d as o3d
 import torch
-from pytorch3d.io import load_obj, load_ply, IO
+from pytorch3d.io import load_obj, load_ply, save_obj
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
 from torch.utils.data import Dataset
+from matplotlib import pyplot as plt
 
 from dataset import _P3DFaces
-from submodules.NIMBLE_model.utils import vertices2landmarks
+from visualization import bone_colors, bones
 from submodules.HiFiHR.models_res_nimble import Model as HiFiHRModel
-from submodules.HiFiHR.utils.train_utils import load_hifihr
+from submodules.HiFiHR.utils.manopth.manolayer import ManoLayer
 from submodules.HiFiHR.utils.NIMBLE_model.utils import save_hifihr_mesh
-from submodules.HiFiHR.utils.my_mano import MyMANOLayer
+from submodules.HiFiHR.utils.train_utils import load_hifihr
+from submodules.NIMBLE_model.utils import vertices2landmarks
 
 NIMBLE_N_VERTS = 5990
 ROOT_JOINT_IDX = 9
@@ -28,6 +31,7 @@ class HandDataset(Dataset):
     def __init__(self, opt, cfg, device) -> None:
         self.cfg = cfg
         self.device = device
+        self.opt = opt
         self.image = opt.image
         self.hand = opt.hand
         self.cached = opt.cached
@@ -50,7 +54,9 @@ class HandDataset(Dataset):
             self.device, self.hifihr_model, self.hand.hifihr_pretrained
         )
         self.hifihr_model.eval()
-        self.hifihr_r_layer = MyMANOLayer(ifRender=False, device=self.device, shape_ncomp=10, pose_ncomp=48, tex_ncomop=None)
+        self.manolayer = ManoLayer(
+            flat_hand_mean=False, ncomps=45, side="right", use_pca=False
+        )
 
         # mano
         self.mano_f = torch.from_numpy(
@@ -66,7 +72,6 @@ class HandDataset(Dataset):
         self.skin_f = nimble_pm_dict["skin_f"]
         self.nimble_mano_vreg_fidx = nimble_mano_vreg["lmk_faces_idx"]
         self.nimble_mano_vreg_bc = nimble_mano_vreg["lmk_bary_coords"]
-        self.nimble_jreg_mano = nimble_pm_dict["jreg_mano"]
 
         # smplx
         with open(opt.hand.smplx_model, "rb") as f:
@@ -92,6 +97,8 @@ class HandDataset(Dataset):
 
     def __getitem__(self, idx):
         fidx = self.fidxs[idx]
+        verts_color = plt.cm.viridis(np.linspace(0, 1, 778))[:, :-1]
+        joint_color = plt.cm.gist_rainbow(np.linspace(0, 1, 21))[:, :-1]
 
         # image
         image = torch.from_numpy(
@@ -108,61 +115,85 @@ class HandDataset(Dataset):
             inpainted_image = None
 
         # image -> hand mesh
-        if not os.path.exists(self.cached.hand.path % fidx) or not os.path.exists(
-            self.cached.hand.xyz % fidx
+        hand_path = self.cached.hand.path % fidx
+        mano_r_path = self.cached.mano_r.path % fidx
+        mano_joint_r_path = self.cached.mano_r.joint % fidx
+        bone_vis_path = self.cached.mano_r.bone_vis % fidx
+        joint_vis_path = self.cached.mano_r.joint_vis % fidx
+        xyz_save_path = self.cached.hand.xyz % fidx
+        if (
+            not os.path.exists(hand_path)
+            or not os.path.exists(xyz_save_path)
+            or not os.path.exists(mano_r_path)
+            or not os.path.exists(mano_joint_r_path)
+            or self.opt.refresh_data
         ):
             image_hifihr = (
                 image.permute(2, 0, 1).unsqueeze(0).to(self.device).to(torch.float32)
                 / 255.0
             )
-            output = self.hifihr_model(
-                "FreiHand", mode_train=False, images=image_hifihr
-            )
-            hand_theta = output["pose_params"]
+            with torch.no_grad():
+                output = self.hifihr_model(
+                    "FreiHand", mode_train=False, images=image_hifihr
+                )
             hand_mesh = output["skin_meshes"]
             hand_textures = output["textures"]
+            mano_verts_r = output["mano_verts_r"].squeeze(0)
+            mano_verts_r[:, 2] *= -1
+            mano_verts_r[:, [0,2]] = mano_verts_r[:, [2,0]]
+            mano_verts_r = mano_verts_r.cpu().numpy()
+            mano_joints_r = output["mano_joints_r"].squeeze(0)
+            mano_joints_r[:, 2] *= -1
+            mano_joints_r[:, [0,2]] = mano_joints_r[:, [2,0]]
+            mano_joints_r = mano_joints_r.cpu().numpy()
             xyz = output["xyz"]
 
-            # normalize rotation
-            output_r = self.hifihr_r_layer(hand_theta, handle_collision=False)
-
             # save
-            hand_save_path = self.cached.hand.path % fidx
-            xyz_save_path = self.cached.hand.xyz % fidx
-            hand_r_save_path = self.cached.hand_r.path % fidx
-            hand_mesh = hand_mesh.verts_padded()[0].detach().cpu().numpy()
-            hand_textures = hand_textures[0].detach().cpu().numpy()
-            xyz = xyz[0].detach().cpu().numpy()
-            hand_mesh_r = output_r["skin_meshes"].verts_padded()[0].detach().cpu().numpy()
             save_hifihr_mesh(
-                hand_save_path,
+                hand_path,
                 xyz_save_path,
                 self.hand.nimble_tex_fuv,
-                hand_mesh,
-                hand_textures,
-                xyz,
+                hand_mesh.verts_padded()[0].cpu().numpy(),
+                hand_textures[0].cpu().numpy(),
+                xyz[0].cpu().numpy(),
             )
-            io = IO()
-            io.save_mesh(hand_mesh_r, hand_r_save_path)
-            logger.info(f"Saved HiFiHR hand mesh to {hand_save_path}")
-            logger.info(f"Saved HiFiHR predicted xyz to {xyz_save_path}")
-            logger.info(f"Saved HiFiHR hand mesh_r to {hand_r_save_path}")
+            vertices = o3d.utility.Vector3dVector(mano_verts_r)
+            faces = o3d.utility.Vector3iVector(self.mano_f)
+            mesh = o3d.geometry.TriangleMesh(vertices, faces)
+            mesh.vertex_colors = o3d.utility.Vector3dVector(verts_color)
+            o3d.io.write_triangle_mesh(mano_r_path, mesh)
+            np.save(mano_joint_r_path, mano_joints_r)
+            logger.info(f"Saved {hand_path}")
+            logger.info(f"Saved {xyz_save_path}")
+            logger.info(f"Saved {mano_r_path}")
+            logger.info(f"Saved {mano_joint_r_path}")
 
-        # hand mesh
-        hand_verts, hand_faces, hand_aux = load_obj(
-            self.cached.hand.path % fidx, load_textures=True
-        )
-        hand_verts_r, _, _ = load_obj(self.cached.hand_r.path % fidx, load_textures=False)
-        # keypoints
-        xyz = np.load(self.cached.hand.xyz % fidx)
+            # visualize
+            kp = o3d.utility.Vector3dVector(mano_joints_r)
+            lines = o3d.utility.Vector2iVector(bones)
+            colors = np.array(bone_colors).astype(np.float64)
+            line_set = o3d.geometry.LineSet(kp, lines)
+            keypoints = o3d.geometry.PointCloud(kp)
+            line_set.colors = o3d.utility.Vector3dVector(colors)
+            assert line_set.has_colors()
+            keypoints.colors = o3d.utility.Vector3dVector(joint_color)
+            o3d.io.write_line_set(bone_vis_path, line_set)
+            o3d.io.write_point_cloud(joint_vis_path, keypoints)
+            logger.info(f"Saved {bone_vis_path}")
+            logger.info(f"Saved {joint_vis_path}")
+        hand_verts, hand_faces, hand_aux = load_obj(hand_path, load_textures=True)
+        mano_verts_r, _, _ = load_obj(mano_r_path, load_textures=False)
+        mano_joints_r = torch.from_numpy(np.load(mano_joint_r_path))
+        xyz = np.load(xyz_save_path)
 
+        # return
         return_dict = dict(
             fidxs=fidx,
             images=image,
-            hand_theta=hand_theta,
             hand_verts=hand_verts,
-            hand_verts_r=hand_verts_r,
             hand_faces=hand_faces,
+            mano_verts_r=mano_verts_r,
+            mano_joints_r=mano_joints_r,
             xyz=xyz,
         )
 
@@ -219,7 +250,7 @@ class HandDataset(Dataset):
                     self.nimble_mano_vreg_fidx[i],
                     self.nimble_mano_vreg_bc[i],
                 ).unsqueeze(0)
-                for i in range(1)  # 원래는 20
+                for i in range(1)
             ]
         )
         closest_idx = closest_idx.mean(0).long()
@@ -441,22 +472,19 @@ class SelectorDataset(Dataset):
 
 
 class SelectorTestDataset(Dataset):
-    def __init__(self, hand_fidxs, hand_theta, hand_verts_r):
+    def __init__(self, hand_fidxs, hand_verts_r, hand_joints_r):
         self.hand_fidxs = hand_fidxs
-        assert hand_theta.shape[1] == 48  # 3 + 15 * 3
-        self.hand_theta = hand_theta
-        # self.hand_verts_n = hand_verts_n
         self.hand_verts_r = hand_verts_r
+        self.hand_joints_r = hand_joints_r
         return
 
     def __len__(self):
-        return self.hand_theta.shape[0]
+        return self.hand_fidxs.shape[0]
 
     def __getitem__(self, idx):
         return_dict = dict(
             hand_fidxs=self.hand_fidxs[idx],
-            hand_theta=self.hand_theta[idx],
-            # hand_verts_n=self.hand_verts_n[idx],
             hand_verts_r=self.hand_verts_r[idx],
+            hand_joints_r=self.hand_joints_r[idx],
         )
         return return_dict
