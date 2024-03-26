@@ -13,19 +13,20 @@ defaults:
 
 
 debug: True
-object_selector: 'train'  # 'train' or 'inference'
+object_selector: 'inference'  # 'train' or 'inference'
 is_preoptimized: False
 
 devices: [0]
 batch_size: 1
 
 resume_dir: ''
-selector_ckpt: ''
+selector_ckpt: '/dev/hdd/GenHeld/outputs/2024-03-25/01-26-10/selector_checkpoints/epoch=151-step=456.ckpt'
+
+# Don't touch the ???
 output_dir: ??? 
 results_dir: ???
 selector_ckpt_dir: ???
 ckpt_dir: ???   
-
 
 hydra:
   job:

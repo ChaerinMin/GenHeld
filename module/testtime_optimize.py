@@ -112,16 +112,15 @@ class TestTimeOptimize(LightningModule):
             predict_dataset,
             batch_size=batch_size,
             shuffle=False,
-            pin_memory=True,
             collate_fn=SelectorTestData.collate_fn,
         )
 
         # Selector inference
         object_selection = instantiate(
-            self.cfg.object_selector,
-            self.cfg,
+            self.cfg.select_object,
+            cfg=self.cfg,
             device=hand_verts_r.device,
-            recursive=False,
+            _recursive_=False,
         )
         selector = pl.Trainer(
             devices=len(self.cfg.devices), accelerator=self.accelerator
@@ -231,6 +230,8 @@ class TestTimeOptimize(LightningModule):
             for i in range(sampled_verts_n.shape[0]):
                 sampled_verts_n[i, sampled_verts_n.split_sizes[i] :] = 0.0
             sampled_verts_n.padded = sampled_verts_n
+        else:
+            sampled_verts_n = None
         return object_verts_n, sampled_verts_n
 
     def train_dataloader(self):
@@ -337,7 +338,7 @@ class TestTimeOptimize(LightningModule):
             + self.opt.loss.repulsion_weight * repul_loss.losses
         )
 
-        outputs = dict(loss=loss, new_object_verts=new_obj_verts_n)
+        outputs = dict(loss=loss, new_obj_verts_n=new_obj_verts_n)
         return outputs
 
     def test_step(self, batch, batch_idx):

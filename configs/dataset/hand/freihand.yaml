@@ -20,8 +20,6 @@ opt:
   cached:
     image:
       inpainted_path: "data/FreiHAND/evaluation/inpainted/%08d.jpg"
-      # handarm_seg: "data/FreiHAND/evaluation/egohos_handarm/%08d.png" 
-      # object_seg: "data/FreiHAND/evaluation/egohos_obj/%08d.png"
     hand:
       path: "data/FreiHAND/evaluation/hifihr_obj/%07d.obj"
       xyz: "data/FreiHAND/evaluation/hifihr_obj/%07d_pred_xyz.npy"

@@ -221,25 +221,12 @@ class SelectObject(LightningModule):
             contact_pred,
             contact_xyz_r,
         ) = self.model.contact_net(joints_encoded, hand_verts_r)
-        z_gen = np.random.normal(0.0, 1.0, size=(test_batch_size, self.opt.dim_latent))
-        z_gen = torch.tensor(z_gen, dtype=contact_xyz_r.dtype).to(contact_xyz_r.device)
+        z_gen = np.random.normal(0.0, 1.0, size=(test_batch_size, 512))
+        z_gen = torch.tensor(z_gen, dtype=joints_encoded.dtype).to(joints_encoded.device)
         class_pred, object_pred_r = self.model.dec(z_gen, joints_encoded, contact_xyz_r)
-        object_pred_r = object_pred_r.permute(0, 2, 1).contiguous()
+        object_pred_r = object_pred_r
 
         # logging & visualization
-        consistency_loss, _ = self.loss(
-            class_pred=class_pred,
-            class_gt=None,
-            verts_pred=object_pred_r,
-            verts_gt=None,
-            contact_pred=contact_pred,
-            contact_gt=None,
-            z=None,
-            unsupervised_only=True,
-        )
-        logger.warning(
-            f"Consistency loss for hand {hand_fidxs}: {consistency_loss:.4f}"
-        )
         self.visualize(
             object_pred_r, contact_xyz_r, hand_fidxs, class_pred, class_gt=None
         )
@@ -259,83 +246,81 @@ class SelectObject(LightningModule):
         contact_pred,
         contact_gt,
         z=None,
-        unsupervised_only=False,
     ):
         batch_size = class_pred.shape[0]
 
         loss = 0.0
         loss_dict = {}
         thres = torch.tensor(0.5, dtype=contact_pred.dtype, device=contact_pred.device)
-        if not unsupervised_only:
-            # category
-            category_loss = -torch.mean(
-                class_gt
-                * torch.log(class_pred + 1e-8)
-                * self.class_weights.unsqueeze(0)
+        # category
+        category_loss = -torch.mean(
+            class_gt
+            * torch.log(class_pred + 1e-8)
+            * self.class_weights.unsqueeze(0)
+        )
+        category_acc = (
+            torch.sum(
+                torch.argmax(class_gt, dim=1) == torch.argmax(class_pred, dim=1)
             )
-            category_acc = (
-                torch.sum(
-                    torch.argmax(class_gt, dim=1) == torch.argmax(class_pred, dim=1)
+            / batch_size
+        )
+
+        # object pc
+        if self.opt.loss.objectpoint == "mse":
+            objectpoint_loss = F.mse_loss(
+                verts_pred.view(batch_size, -1), verts_gt.view(batch_size, -1)
+            )
+        elif self.opt.loss.objectpoint == "icp":
+            with torch.no_grad():
+                icpsolution = iterative_closest_point(
+                    verts_gt, verts_pred, allow_reflection=True
                 )
-                / batch_size
+            objectpoint_loss = F.mse_loss(
+                verts_pred.view(batch_size, -1), icpsolution.Xt.view(batch_size, -1)
+            )
+        else:
+            logger.error(f"Invalid objectpoint loss: {self.opt.loss.objectpoint}")
+            raise ValueError
+
+        # contact
+        contact_loss = F.cross_entropy(contact_pred, contact_gt)
+        contact_acc = (
+            torch.sum((contact_pred > thres) == (contact_gt > thres))
+            / contact_gt.numel()
+        )
+
+        # KL-divergence
+        if z is not None:
+            dim_latent = z.mean.shape[1]
+            q_z = torch.distributions.normal.Normal(z.mean, z.scale)
+            p_z = torch.distributions.normal.Normal(
+                loc=torch.tensor(
+                    np.zeros([batch_size, dim_latent]), requires_grad=False
+                )
+                .to(z.mean.device)
+                .type(z.mean.dtype),
+                scale=torch.tensor(
+                    np.ones([batch_size, dim_latent]), requires_grad=False
+                )
+                .to(z.mean.device)
+                .type(z.mean.dtype),
+            )
+            kl_loss = torch.mean(
+                torch.sum(torch.distributions.kl.kl_divergence(q_z, p_z), dim=[1])
             )
 
-            # object pc
-            if self.opt.loss.objectpoint == "mse":
-                objectpoint_loss = F.mse_loss(
-                    verts_pred.view(batch_size, -1), verts_gt.view(batch_size, -1)
-                )
-            elif self.opt.loss.objectpoint == "icp":
-                with torch.no_grad():
-                    icpsolution = iterative_closest_point(
-                        verts_gt, verts_pred, allow_reflection=True
-                    )
-                objectpoint_loss = F.mse_loss(
-                    verts_pred.view(batch_size, -1), icpsolution.Xt.view(batch_size, -1)
-                )
-            else:
-                logger.error(f"Invalid objectpoint loss: {self.opt.loss.objectpoint}")
-                raise ValueError
-
-            # contact
-            contact_loss = F.cross_entropy(contact_pred, contact_gt)
-            contact_acc = (
-                torch.sum((contact_pred > thres) == (contact_gt > thres))
-                / contact_gt.numel()
-            )
-
-            # KL-divergence
-            if z is not None:
-                dim_latent = z.mean.shape[1]
-                q_z = torch.distributions.normal.Normal(z.mean, z.scale)
-                p_z = torch.distributions.normal.Normal(
-                    loc=torch.tensor(
-                        np.zeros([batch_size, dim_latent]), requires_grad=False
-                    )
-                    .to(z.mean.device)
-                    .type(z.mean.dtype),
-                    scale=torch.tensor(
-                        np.ones([batch_size, dim_latent]), requires_grad=False
-                    )
-                    .to(z.mean.device)
-                    .type(z.mean.dtype),
-                )
-                kl_loss = torch.mean(
-                    torch.sum(torch.distributions.kl.kl_divergence(q_z, p_z), dim=[1])
-                )
-
-            loss = (
-                self.opt.loss.category_weight * category_loss
-                + self.opt.loss.objectpoint_weight * objectpoint_loss
-                + self.opt.loss.contact_weight * contact_loss
-                + self.kl_annealing * self.opt.loss.kl_weight * kl_loss
-            )
-            loss_dict["category_loss"] = category_loss
-            loss_dict["category_acc"] = category_acc
-            loss_dict["objectpoint_loss"] = objectpoint_loss
-            loss_dict["contact_loss"] = contact_loss
-            loss_dict["contact_acc"] = contact_acc
-            loss_dict["kl_loss"] = kl_loss
+        loss = (
+            self.opt.loss.category_weight * category_loss
+            + self.opt.loss.objectpoint_weight * objectpoint_loss
+            + self.opt.loss.contact_weight * contact_loss
+            + self.kl_annealing * self.opt.loss.kl_weight * kl_loss
+        )
+        loss_dict["category_loss"] = category_loss
+        loss_dict["category_acc"] = category_acc
+        loss_dict["objectpoint_loss"] = objectpoint_loss
+        loss_dict["contact_loss"] = contact_loss
+        loss_dict["contact_acc"] = contact_acc
+        loss_dict["kl_loss"] = kl_loss
 
         loss_dict["loss"] = loss
         return loss, loss_dict
@@ -409,10 +394,18 @@ class SelectObject(LightningModule):
         # class pred
         class_pred = class_pred.cpu()
         for b in range(batch_size):
-            class_pred_path = os.path.join(
-                save_dir,
-                f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_class_pred.txt",
-            )
+            if self.trainer.state.fn == "fit":
+                class_pred_path = os.path.join(
+                    save_dir,
+                    f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_class_pred.txt",
+                )
+            elif self.trainer.state.fn == "predict":
+                class_pred_path = os.path.join(
+                    self.cfg.results_dir, f"hand{fidxs[b]}_selector_class_pred.txt"
+                )
+            else:
+                logger.error(f"Invalid state for visualizing: {self.trainer.state.fn}")
+                raise ValueError
             with open(class_pred_path, "w") as f:
                 f.write(str(torch.argmax(class_pred[b]).item()))
 

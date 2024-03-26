@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import open3d as o3d
 import torch
-from pytorch3d.io import load_obj, load_ply, save_obj
+from pytorch3d.io import load_obj, load_ply
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
 from torch.utils.data import Dataset
 from matplotlib import pyplot as plt
@@ -224,7 +224,6 @@ class HandDataset(Dataset):
             lmk_bary_minidx = torch.argmin(lmk_bary_coords.to(device), dim=1)
             closest_idx = lmk_faces[torch.arange(lmk_faces.shape[0]), lmk_bary_minidx]
             return closest_idx.float()
-            # return lmk_faces[...,0].float()
 
         nimble_h_faces = self.skin_f.to(device)
 
