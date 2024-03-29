@@ -1,17 +1,22 @@
-Niters: 1000
-lr: 0.1
+Niters: 1000  # 1000
+lr: 0.08
+scale_clip: [0.8, 1.0]
+start_fidx: null
+end_fidx: null
 
 plot:
-  tolerance_step: 200
+  tolerance_step: 200 # 200
   tolerance_difference: 0.0005
   mesh_period: 10000
   render_period: 10000
   pc_period: 1000000
+  force_closure_period: 100000
   contact_period: 1000000
 
 loss:
-  attraction_weight: 0.5
-  repulsion_weight: 0.5
+  attraction_weight: 0.8
+  repulsion_weight: 1
+  force_closure_weight: 0.03
 
 contactloss:
   contact_thresh: 5
@@ -21,3 +26,5 @@ contactloss:
   contact_target: "obj"
   contact_sym: False
   contact_zones: "zones"
+  fc_n_contacts: 3
+  fc_voxel_size: 0.01

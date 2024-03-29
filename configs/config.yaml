@@ -12,7 +12,7 @@ defaults:
   - _self_
 
 
-debug: True
+debug: False
 object_selector: 'inference'  # 'train' or 'inference'
 is_preoptimized: False
 

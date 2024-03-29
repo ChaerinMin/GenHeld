@@ -55,7 +55,7 @@ class TestTimeOptimize(LightningModule):
         self.accelerator = accelerator
         self.opt = cfg.testtime_optimize
         self.handresult = handresult
-        self.contact_loss = ContactLoss(cfg, self.opt.contactloss)
+        self.contact_loss = ContactLoss(cfg, self.opt.contactloss, device=device)
         self.object_dataset = instantiate(self.cfg.object_dataset)
         self.object_dataloader = DataLoader(
             self.object_dataset,
@@ -66,13 +66,16 @@ class TestTimeOptimize(LightningModule):
         )
 
         # parameters
-        self.s_params = nn.Parameter(
-            torch.ones(
-                self.handresult.batch_size,
-                requires_grad=True,
-                device=self.device_manual,
-            )
+        self.s_params = torch.ones(
+            self.handresult.batch_size,
+            requires_grad=True,
+            device=self.device_manual,
         )
+        if self.opt.scale_clip[0] == self.opt.scale_clip[1]:
+            assert self.opt.scale_clip[0] == 1.0
+        if self.opt.scale_clip[0] != self.opt.scale_clip[1]:
+            assert self.opt.scale_clip[0] <= 1.0 <= self.opt.scale_clip[1]
+            self.s_params = nn.Parameter(self.s_params)
         self.t_params = nn.Parameter(
             torch.zeros(
                 self.handresult.batch_size,
@@ -95,6 +98,8 @@ class TestTimeOptimize(LightningModule):
             torch.ones(self.handresult.batch_size, device=self.device_manual) * 1e10
         )
 
+        # self.tip_idxs = torch.tensor([745, 317, 444, 556, 673], device=self.device_manual)
+        self.tip_idxs = torch.tensor([763, 328, 438, 566, 683], device=self.device_manual)
         return
 
     def on_train_start(self):
@@ -129,12 +134,12 @@ class TestTimeOptimize(LightningModule):
             object_selection,
             dataloaders=predict_dataloader,
             ckpt_path=self.cfg.selector_ckpt,
-        )
+        )[0]
 
         # load object data
         train_batch = []
         for b in range(batch_size):
-            class_pick = random.choice(list(class_preds[b]))
+            class_pick = random.choice(class_preds[b])
             idx = self.object_dataset.fidxs.index(class_pick)
             train_batch.append(self.object_dataset[idx])
         train_batch = ObjectData.collate_fn(train_batch)
@@ -152,6 +157,11 @@ class TestTimeOptimize(LightningModule):
         self.object_verts_n, self.sampled_verts_n = self.normalize_ho(
             object_verts, sampled_verts
         )
+
+        # force closure loss
+        self.fc_contact_ind = None
+        self.force_losses = None
+        self.rejection_count = torch.zeros([batch_size, 1], device=self.device_manual, dtype=torch.long)
         return
 
     def on_test_start(self):
@@ -246,9 +256,14 @@ class TestTimeOptimize(LightningModule):
         return loop
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(
-            [self.s_params, self.t_params, self.R_params], lr=self.opt.lr
-        )
+        if self.opt.scale_clip[0] != self.opt.scale_clip[1]:
+            optimizer = torch.optim.Adam(
+                [self.s_params, self.t_params, self.R_params], lr=self.opt.lr
+            )
+        else:
+            optimizer = torch.optim.Adam(
+                [self.t_params, self.R_params], lr=self.opt.lr
+            )
         return optimizer
 
     def on_after_batch_transfer(self, batch, dataloader_idx):
@@ -259,11 +274,17 @@ class TestTimeOptimize(LightningModule):
         self.batch_idx = batch_idx
 
         # transform the object verts
-        s_sigmoid = torch.sigmoid(self.s_params) * 3.0 - 1.5
+        # s_sigmoid = torch.sigmoid(self.s_params) * 2.2 - 1.1
+        # min_s = 1.0 - self.opt.scale_clip
+        # max_s = 1.0 + self.opt.scale_clip
+        min_s = self.opt.scale_clip[0]
+        max_s = self.opt.scale_clip[1]
+        # shift = ((1-min_s) / (max_s - min_s)) * 2.0 - 2
+        s_clipped = min_s + (torch.tanh(self.s_params) + 1) * 0.5 * (max_s - min_s)
         R_matrix = axis_angle_to_matrix(self.R_params)
         t = (
             Transform3d(device=self.device_manual)
-            .scale(s_sigmoid)
+            .scale(s_clipped)
             .rotate(R_matrix)
             .translate(self.t_params)
         )
@@ -279,17 +300,38 @@ class TestTimeOptimize(LightningModule):
         else:
             new_sampled_verts_n = None
 
-        return new_obj_verts_n, new_sampled_verts_n, R_matrix, s_sigmoid
+        return new_obj_verts_n, new_sampled_verts_n, R_matrix, s_clipped
 
     def training_step(self, batch, batch_idx):
-        new_obj_verts_n, new_sampled_verts_n, R_matrix, s_sigmoid = self(
+        batch_size = self.handresult.batch_size
+        new_obj_verts_n, new_sampled_verts_n, R_matrix, s_clipped = self(
             batch, batch_idx
         )
+        
+        # force closure contact
+        if self.opt.loss.force_closure_weight > 0:
+            if self.fc_contact_ind is None:
+                thumb = torch.zeros([batch_size, 1], device=self.device_manual, dtype=torch.long)
+                new_fc_contact_ind = torch.randint(1, 5, size=[batch_size, self.opt.contactloss.fc_n_contacts-1], device=self.device_manual, dtype=torch.long)
+                new_fc_contact_ind = torch.cat([thumb, new_fc_contact_ind], dim=1)
+                new_fc_contact_ind = self.tip_idxs[new_fc_contact_ind]
+            else:
+                new_fc_contact_ind = self.fc_contact_ind.clone()
+                update_ind = torch.randint(1, self.opt.contactloss.fc_n_contacts, size=[batch_size], device=self.device_manual)
+                update_to = torch.randint(1, 5, size=[batch_size], device=self.device_manual)
+                update_to = self.tip_idxs[update_to]
+                new_fc_contact_ind[torch.arange(batch_size).to(self.device_manual), update_ind] = update_to
+                switch = torch.rand([batch_size, 1], device='cuda')
+                update_H = ((switch < 0.85) * (self.rejection_count < 2))  # langevin probability: 0.85
+                new_fc_contact_ind = new_fc_contact_ind * (~update_H) + self.fc_contact_ind * update_H
+        else:
+            new_fc_contact_ind = None
 
         # loss
         (
             attr_loss,
             repul_loss,
+            new_fc_loss,
             contact_info,
             metrics,
         ) = self.contact_loss(
@@ -300,24 +342,45 @@ class TestTimeOptimize(LightningModule):
             sampled_verts=new_sampled_verts_n,
             contact_object=self.contact_object,
             partition_object=self.partition_object,
+            fc_contact_ind=new_fc_contact_ind,
         )
         attraction_loss = attr_loss.loss
         repulsion_loss = repul_loss.loss
+        new_force_loss = new_fc_loss.loss
         loss = (
             self.opt.loss.attraction_weight * attraction_loss
             + self.opt.loss.repulsion_weight * repulsion_loss
+            + self.opt.loss.force_closure_weight * new_force_loss
         )
+
+        # force closure Metropolis-Hasting
+        new_force_losses = new_fc_loss.losses
+        if self.opt.loss.force_closure_weight > 0:
+            if self.force_losses is None:
+                self.fc_contact_ind = new_fc_contact_ind
+                self.force_losses = new_force_losses
+            else:
+                with torch.no_grad():
+                    alpha = torch.rand(batch_size, device=new_force_losses.device, dtype=new_force_losses.dtype)
+                    temperature = 0.02600707 + self.force_losses * 0.03950357  # Tengyu Liu RAL 2021
+                    accept = alpha < torch.exp((new_force_losses - self.force_losses) / temperature)
+                    self.fc_contact_ind[accept] = new_fc_contact_ind[accept]
+                    self.force_losses[accept] = new_force_losses[accept]
+                    self.rejection_count[accept] = 0
+                    self.rejection_count[~accept] += 1
 
         # logging
         R_euler = matrix_to_euler_angles(R_matrix, "XYZ")
         logs = {
-            "loss": loss.item() / self.handresult.batch_size,
-            "attraction_loss": attraction_loss.item() / self.handresult.batch_size,
-            "repulsion_loss": repulsion_loss.item() / self.handresult.batch_size,
+            "loss": loss.item(),
+            "attraction_loss": attraction_loss.item(),
+            "repulsion_loss": repulsion_loss.item(),
             "iter": batch_idx,
         }
-        for b in range(self.handresult.batch_size):
-            logs[f"scale_{self.handresult.fidxs[b]}"] = s_sigmoid[b].item()
+        if self.opt.loss.force_closure_weight > 0:
+            logs["new_force_loss"] = new_force_loss.item()
+        for b in range(batch_size):
+            logs[f"scale_{self.handresult.fidxs[b]}"] = s_clipped[b].item()
             logs[f"translate_x_{self.handresult.fidxs[b]}"] = self.t_params[b, 0].item()
             logs[f"translate_y_{self.handresult.fidxs[b]}"] = self.t_params[b, 1].item()
             logs[f"translate_z_{self.handresult.fidxs[b]}"] = self.t_params[b, 2].item()
@@ -336,6 +399,7 @@ class TestTimeOptimize(LightningModule):
         self.current_losses = (
             self.opt.loss.attraction_weight * attr_loss.losses
             + self.opt.loss.repulsion_weight * repul_loss.losses
+            + self.opt.loss.force_closure_weight * new_fc_loss.losses
         )
 
         outputs = dict(loss=loss, new_obj_verts_n=new_obj_verts_n)
@@ -571,6 +635,20 @@ class TestTimeOptimize(LightningModule):
                         Image.fromarray(blended_image).save(out_blended_path)
                         logger.info(f"Saved {out_blended_path}")
 
+            # plot force closure normal
+            if self.opt.loss.force_closure_weight > 0:
+                is_period = batch_idx % self.opt.plot.force_closure_period == 0
+                if self.update_mask.any() or is_period:
+                    self.contact_loss.plot_fc_normal(
+                        hand_fidxs=self.handresult.fidxs,
+                        object_fidxs=self.object_fidx,
+                        iter=batch_idx,
+                        denorm_center=self.handresult.center,
+                        denorm_scale=self.handresult.max_norm,
+                        save_mask=self.update_mask,
+                        is_period=is_period,
+                    )
+
         # plot point cloud
         if batch_idx % self.opt.plot.pc_period == self.opt.plot.pc_period - 1:
             for b in range(self.handresult.batch_size):
@@ -586,7 +664,7 @@ class TestTimeOptimize(LightningModule):
                     verts_n,
                     title=f"hand: {self.handresult.fidxs[b]}, iter: {batch_idx}",
                 )
-
+        
         # save contact point cloud
         if batch_idx % self.opt.plot.contact_period == 0:
             self.contact_loss.plot_contact(

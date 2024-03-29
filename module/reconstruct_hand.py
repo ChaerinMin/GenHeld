@@ -248,7 +248,7 @@ class ReconstructHand(LightningModule):
             hand_faces_verts_idx = hand_faces_verts_idx.unsqueeze(0).repeat(
                 batch_size, 1, 1
             )
-            hand_faces = _P3DFaces(verts_idx=hand_faces_verts_idx)
+            hand_faces = _P3DFaces(verts_idx=hand_faces_verts_idx.to(hand_verts_n.device))
         else:
             logger.debug("Hand model: MANO")
 

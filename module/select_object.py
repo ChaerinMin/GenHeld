@@ -233,7 +233,7 @@ class SelectObject(LightningModule):
 
         # output
         class_pred = torch.argmax(class_pred, dim=1)
-        class_pred = self.object_names[class_pred]
+        class_pred = [self.object_names[pred] for pred in class_pred]
 
         return class_pred
 

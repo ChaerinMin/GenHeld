@@ -37,6 +37,11 @@ class FreiHANDDataset(HandDataset):
             with open(resume_fidx_path, "r") as f:
                 resume_fidx, end_fidx = map(int, f.read().split("\n"))
             logger.info(f"If continue to train, will resume from {resume_fidx}")
+        elif cfg.testtime_optimize.start_fidx is not None:
+            resume_fidx = cfg.testtime_optimize.start_fidx
+            assert cfg.testtime_optimize.end_fidx is not None
+            end_fidx = cfg.testtime_optimize.end_fidx
+            logger.info(f"Start from fidx {resume_fidx}")
         self.fidxs = fidxs[fidxs.index(resume_fidx):fidxs.index(end_fidx)+1]        
         self.end_fidx = end_fidx
 
