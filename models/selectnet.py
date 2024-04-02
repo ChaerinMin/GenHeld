@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import torch
 from pytorch3d.structures import Pointclouds
@@ -6,6 +8,7 @@ from torch.nn import functional as F
 
 from models.pointnet import PointNetSetAbstraction, STNkd
 
+logger = logging.getLogger(__name__)
 
 class ResBlock(nn.Module):
     def __init__(self, Fin, Fout, dim_hidden=256):
@@ -267,8 +270,9 @@ class PositionalEncoding(nn.Module):
 
 
 class SelectObjectNet(nn.Module):
-    def __init__(self, opt):
+    def __init__(self, opt, device_manual):
         super().__init__()
+        self.opt = opt
         assert opt.n_obj_points > 2048
         # positional encoding
         self.pos_enc = PositionalEncoding()
@@ -289,7 +293,7 @@ class SelectObjectNet(nn.Module):
         self.en_resnet2 = ConvResBlock(64, 128)
         self.en_resnet3 = ConvResBlock(128, 256)
         self.en_resnet4 = ConvResBlock(256, 512)
-        self.en_maxpool = nn.MaxPool1d(opt.n_class + dim_pos_enc)
+        self.en_maxpool = nn.MaxPool1d(opt.dim_input + dim_pos_enc)
 
         # fusion
         self.en_cross1 = CrossAttention(512, 512)
@@ -318,8 +322,16 @@ class SelectObjectNet(nn.Module):
         self.de_resnet2 = ResBlock(256, 128)
         self.de_cross2 = CrossAttention(128, 128)
         self.de_resnet3 = ResBlock(128, 64)
-        self.de_mlp2 = nn.Linear(64, opt.n_class)
-        self.de_softmax = nn.Softmax()
+        self.de_mlp2 = nn.Linear(64, opt.dim_output)
+        if opt.output == "category":
+            self.de_final = nn.Softmax()
+        elif opt.output == "shapecode":
+            self.de_final = nn.ReLU()
+            self.add_final = torch.tensor([0., 0., 0., 1., 1., 1.], device=device_manual)
+            assert self.opt.dim_output == 6 and self.opt.dim_input == 3
+        else:
+            logger.error(f"Unknown output type: {opt.output}")
+            raise ValueError(f"Unknown output type: {opt.output}")
 
         return
 
@@ -337,28 +349,28 @@ class SelectObjectNet(nn.Module):
         obj_x = obj_x.permute(0, 2, 1).contiguous()
         return obj_x
 
-    def enc(self, class_vec, joints_encoded, contact_xyz_r, object_pcs, object_normals):
+    def enc(self, inputs, joints_encoded, contact_xyz_r, object_pcs, object_normals):
         object_pcs = object_pcs.points_padded()
         object_pcs = object_pcs.permute(0, 2, 1).contiguous()
         object_normals = object_normals.permute(0, 2, 1).contiguous()
-
+        
         # object pc
         obj_x = self.object_upsample(joints_encoded, contact_xyz_r)
         obj_x = torch.cat([obj_x, object_normals], dim=1)
         *_, obj_x = self.en_pointnet1(object_pcs, obj_x)
-
+        
         # category
-        cate_x = torch.cat(
-            [class_vec.unsqueeze(1), joints_encoded.unsqueeze(1)], dim=2
+        input_x = torch.cat(
+            [inputs.unsqueeze(1), joints_encoded.unsqueeze(1)], dim=2
         ).float()
-        cate_x = self.en_resnet1(cate_x)
-        cate_x = self.en_resnet2(cate_x)
-        cate_x = self.en_resnet3(cate_x)
-        cate_x = self.en_resnet4(cate_x)
-        cate_x = self.en_maxpool(cate_x).squeeze(2)
+        input_x = self.en_resnet1(input_x)
+        input_x = self.en_resnet2(input_x)
+        input_x = self.en_resnet3(input_x)
+        input_x = self.en_resnet4(input_x)
+        input_x = self.en_maxpool(input_x).squeeze(2)
 
         # fusion
-        z = self.en_cross1(obj_x, cate_x)
+        z = self.en_cross1(obj_x, input_x)
         z = self.fusion_resnet(z)
         z = torch.distributions.normal.Normal(
             self.fusion_mu(z), F.softplus(self.fusion_var(z))
@@ -386,11 +398,13 @@ class SelectObjectNet(nn.Module):
         object_pred = object_pred.permute(0, 2, 1).contiguous()
 
         # category
-        category_pred = torch.cat([z, joints_encoded], dim=1)
-        category_pred = self.de_resnet1(category_pred)
-        category_pred = self.de_resnet2(category_pred)
-        category_pred = self.de_resnet3(category_pred)
-        category_pred = self.de_mlp2(category_pred)
-        category_pred = self.de_softmax(category_pred)
+        output_pred = torch.cat([z, joints_encoded], dim=1)
+        output_pred = self.de_resnet1(output_pred)
+        output_pred = self.de_resnet2(output_pred)
+        output_pred = self.de_resnet3(output_pred)
+        output_pred = self.de_mlp2(output_pred)
+        output_pred = self.de_final(output_pred)
+        if self.opt.output == "shapecode":
+            output_pred = output_pred + self.add_final.unsqueeze(0)
 
-        return category_pred, object_pred
+        return output_pred, object_pred

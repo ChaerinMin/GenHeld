@@ -81,7 +81,7 @@ def main(cfg):
         object_selection = instantiate(cfg.select_object, cfg=cfg, device=device , _recursive_=False)
         callbacks = [
             ModelCheckpoint(
-                dirpath=cfg.selector_ckpt_dir, monitor="val_category_acc", mode="max", verbose=cfg.debug
+                dirpath=cfg.selector_ckpt_dir, monitor="val/category_top1", mode="max", verbose=cfg.debug
             ),
             LearningRateMonitor(logging_interval="step")
         ]
@@ -101,7 +101,8 @@ def main(cfg):
             logger=loggers,
             enable_model_summary=True,
             default_root_dir=cfg.output_dir,
-            val_check_interval=1.0,  # one epoch
+            # val_check_interval=1.0,  # one epoch
+            check_val_every_n_epoch=cfg.select_object.opt.val.every_n_epoch,
         )
         if cfg.selector_ckpt:  # resume training
             logger.warning(f"Resume from {cfg.selector_ckpt}")

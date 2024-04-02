@@ -224,6 +224,7 @@ class SelectorData:
     hand_joints_r: Tensor
     hand_contacts_r: Tensor
     class_vecs: Tensor
+    shape_codes: Tensor
     object_pcs_r: Pointclouds
 
     def to(self, device):
@@ -231,6 +232,7 @@ class SelectorData:
         self.hand_joints_r = self.hand_joints_r.to(device)
         self.hand_contacts_r = self.hand_contacts_r.to(device)
         self.class_vecs = self.class_vecs.to(device)
+        self.shape_codes = self.shape_codes.to(device)
         self.object_pcs_r = self.object_pcs_r.to(device)
         return self
     

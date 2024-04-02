@@ -14,7 +14,7 @@ from torch.utils.data import Dataset
 from matplotlib import pyplot as plt
 
 from dataset import _P3DFaces
-from visualization import bone_colors, bones
+from visualization import bones
 from submodules.HiFiHR.models_res_nimble import Model as HiFiHRModel
 from submodules.HiFiHR.utils.manopth.manolayer import ManoLayer
 from submodules.HiFiHR.utils.NIMBLE_model.utils import save_hifihr_mesh
@@ -171,11 +171,8 @@ class HandDataset(Dataset):
             # visualize
             kp = o3d.utility.Vector3dVector(mano_joints_r)
             lines = o3d.utility.Vector2iVector(bones)
-            colors = np.array(bone_colors).astype(np.float64)
             line_set = o3d.geometry.LineSet(kp, lines)
             keypoints = o3d.geometry.PointCloud(kp)
-            line_set.colors = o3d.utility.Vector3dVector(colors)
-            assert line_set.has_colors()
             keypoints.colors = o3d.utility.Vector3dVector(joint_color)
             o3d.io.write_line_set(bone_vis_path, line_set)
             o3d.io.write_point_cloud(joint_vis_path, keypoints)

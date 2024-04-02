@@ -98,7 +98,6 @@ class TestTimeOptimize(LightningModule):
             torch.ones(self.handresult.batch_size, device=self.device_manual) * 1e10
         )
 
-        # self.tip_idxs = torch.tensor([745, 317, 444, 556, 673], device=self.device_manual)
         self.tip_idxs = torch.tensor([763, 328, 438, 566, 683], device=self.device_manual)
         return
 
@@ -139,7 +138,8 @@ class TestTimeOptimize(LightningModule):
         # load object data
         train_batch = []
         for b in range(batch_size):
-            class_pick = random.choice(class_preds[b])
+            # class_pick = random.choice(class_preds[b])
+            class_pick = class_preds[b]
             idx = self.object_dataset.fidxs.index(class_pick)
             train_batch.append(self.object_dataset[idx])
         train_batch = ObjectData.collate_fn(train_batch)
@@ -274,13 +274,11 @@ class TestTimeOptimize(LightningModule):
         self.batch_idx = batch_idx
 
         # transform the object verts
-        # s_sigmoid = torch.sigmoid(self.s_params) * 2.2 - 1.1
-        # min_s = 1.0 - self.opt.scale_clip
-        # max_s = 1.0 + self.opt.scale_clip
+        # s_sigmoid = torch.sigmoid(self.s_params) * 3.0 - 1.5  # all4000
+        # s_sigmoid = torch.sigmoid(self.s_params) * 2.4 - 1.2  # selector4000
         min_s = self.opt.scale_clip[0]
         max_s = self.opt.scale_clip[1]
-        # shift = ((1-min_s) / (max_s - min_s)) * 2.0 - 2
-        s_clipped = min_s + (torch.tanh(self.s_params) + 1) * 0.5 * (max_s - min_s)
+        s_clipped = min_s + (torch.tanh(self.s_params) + 1) * 0.5 * (max_s - min_s)  # differ_sim4000
         R_matrix = axis_angle_to_matrix(self.R_params)
         t = (
             Transform3d(device=self.device_manual)

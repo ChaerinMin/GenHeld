@@ -1,0 +1,30 @@
+_target_: module.select_object.SelectObject
+
+opt:
+  output: category
+  dim_input: 6
+  dim_output: 6
+  n_obj_points: 3000
+  dim_joints: 21
+  
+  train:
+    batch_size: 65
+    Nepochs: 9000
+    lr: 0.001
+    weight_decay: 0.0005
+    vis_samples: 4
+    vis_epoch: 100
+    vis_debug_epoch: 100
+
+  val:
+    n_per_class: 3
+    period: 50
+    vis_epoch: 50
+
+  loss: 
+    kl_weight: 0.1
+    kl_annealing_epoch: 50 
+    category_weight: 1
+    objectpoint: "mse"  # "mse" or "icp"
+    objectpoint_weight: 0.1
+    contact_weight: 0.1

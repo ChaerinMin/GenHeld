@@ -1,7 +1,9 @@
 _target_: module.select_object.SelectObject
 
 opt:
-  n_class: 6
+  output: shapecode
+  dim_input: 3
+  dim_output: 6
   n_obj_points: 3000
   dim_joints: 21
   
@@ -16,13 +18,14 @@ opt:
 
   val:
     n_per_class: 3
-    period: 50
+    every_n_epoch: 2
     vis_epoch: 50
 
   loss: 
     kl_weight: 0.1
     kl_annealing_epoch: 50 
-    category_weight: 1
+    shapecode_weight: 1
+    confidence_weight: 0.1
     objectpoint: "mse"  # "mse" or "icp"
     objectpoint_weight: 0.1
     contact_weight: 0.1

@@ -3,11 +3,9 @@ import os
 from collections import namedtuple
 
 import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
 import torch
-from mpl_toolkits.mplot3d import Axes3D
 from pytorch3d.loss.point_mesh_distance import point_face_distance
 from pytorch3d.structures import Meshes, Pointclouds
 from torch.nn import Module
