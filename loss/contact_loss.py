@@ -297,6 +297,7 @@ class ContactLoss(Module):
                 "collision_mode {} not in "
                 "[dist_sq|dist|dist_tanh]".format(self.collision_mode)
             )
+
         for b in range(batch_size):
             collision_o_vals[b, obj_verts_pt.split_sizes[b] :] = 0
 
@@ -395,9 +396,11 @@ class ContactLoss(Module):
             fc_terms = fullranks + force_closures + fc_attrs + fc_penes * 3 + normal_alignments 
             fc_loss = self.LossNLosses(fc_term, fc_terms)
         else:
-            fc_loss = torch.tensor(
+            fc_term = torch.tensor(
                 0.0, dtype=missed_loss.dtype, device=missed_loss.device
             )
+            fc_terms = torch.zeros_like(missed_losses)
+            fc_loss = self.LossNLosses(fc_term, fc_terms)
 
         # loss and losses
         missed_loss = self.LossNLosses(missed_loss, missed_losses)

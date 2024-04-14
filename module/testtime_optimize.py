@@ -2,7 +2,6 @@ import glob
 import json
 import logging
 import os
-import random
 import re
 
 import matplotlib as mpl
@@ -17,7 +16,6 @@ from pytorch3d.structures import Pointclouds
 from pytorch3d.transforms import (
     Transform3d,
     axis_angle_to_matrix,
-    matrix_to_euler_angles,
 )
 from pytorch_lightning import LightningModule
 from torch import nn
@@ -27,8 +25,9 @@ from trimesh import Trimesh
 from dataset import DummyDataset, ObjectData, PaddedTensor, SelectorTestData
 from dataset.base_dataset import SelectorTestDataset
 from loss import ContactLoss
+from module.select_object import SelectObject
 from metric import penetration_volume, penetration_vox
-from utils import batch_normalize_mesh, merge_ho
+from utils import batch_normalize_mesh, merge_ho, scale_to_bbox, get_hand_size
 from visualization import blend_images
 
 mpl.rcParams["figure.dpi"] = 80
@@ -57,13 +56,6 @@ class TestTimeOptimize(LightningModule):
         self.handresult = handresult
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss, device=device)
         self.object_dataset = instantiate(self.cfg.object_dataset)
-        self.object_dataloader = DataLoader(
-            self.object_dataset,
-            batch_size=handresult.batch_size,
-            shuffle=True,
-            collate_fn=ObjectData.collate_fn,
-            pin_memory=True,
-        )
 
         # parameters
         self.s_params = torch.ones(
@@ -107,10 +99,11 @@ class TestTimeOptimize(LightningModule):
         # Selector data
         hand_verts_r = Pointclouds(points=self.handresult.mano_verts_r)
         hand_verts_r.estimate_normals(assign_to_self=True)
+        hand_joints_r = self.handresult.mano_joints_r
         predict_dataset = SelectorTestDataset(
             hand_fidxs=self.handresult.fidxs,
             hand_verts_r=hand_verts_r,
-            hand_joints_r=self.handresult.mano_joints_r,
+            hand_joints_r=hand_joints_r,
         )
         predict_dataloader = DataLoader(
             predict_dataset,
@@ -129,7 +122,7 @@ class TestTimeOptimize(LightningModule):
         selector = pl.Trainer(
             devices=len(self.cfg.devices), accelerator=self.accelerator
         )
-        class_preds = selector.predict(
+        class_preds, shape_code = selector.predict(
             object_selection,
             dataloaders=predict_dataloader,
             ckpt_path=self.cfg.selector_ckpt,
@@ -138,25 +131,38 @@ class TestTimeOptimize(LightningModule):
         # load object data
         train_batch = []
         for b in range(batch_size):
-            # class_pick = random.choice(class_preds[b])
-            class_pick = class_preds[b]
-            idx = self.object_dataset.fidxs.index(class_pick)
+            class_prediction = class_preds[b]
+            idx = self.object_dataset.get_idx(class_prediction)
             train_batch.append(self.object_dataset[idx])
         train_batch = ObjectData.collate_fn(train_batch)
         data = ObjectData(**train_batch)
         data = data.to(self.device_manual)
-        self.object_fidx = data.fidx
-        object_verts = data.object_verts
-        self.object_faces = data.object_faces
-        self.object_aux = data.object_aux
+        self.obj_fidx = data.fidx
+        obj_verts = data.object_verts
+        obj_verts_hires = data.object_verts_highres
+        self.obj_faces = data.object_faces
+        self.obj_faces_hires = data.object_faces_highres
+        self.obj_aux_hires = data.object_aux_highres
         sampled_verts = data.sampled_verts
         self.contact_object = data.contacts
         self.partition_object = data.partitions
-
+ 
         # normalize to center
-        self.object_verts_n, self.sampled_verts_n = self.normalize_ho(
-            object_verts, sampled_verts
-        )
+        if shape_code is None:
+            self.obj_verts_n, self.sampled_verts_n, self.obj_verts_n_hires = self.normalize_ho(
+                obj_verts, sampled_verts, obj_verts_hires
+            )
+        else:
+            # verts 124 37
+            hand_size = get_hand_size((hand_joints_r - self.handresult.center) / self.handresult.max_norm.unsqueeze(1).unsqueeze(2))
+            # hand_size = torch.norm(self.handresult.verts_n[:, 124] - self.handresult.verts_n[:, 37]) 
+            bbox_lengths = SelectObject.decompose_shape_code(shape_code, hand_size)
+            self.obj_verts_n, scaling_fn, _ = scale_to_bbox(obj_verts, goal_scale=bbox_lengths)
+            if sampled_verts is not None:
+                self.sampled_verts_n, *_ = scale_to_bbox(sampled_verts, scaling_fn=scaling_fn)
+            else:
+                self.sampled_verts_n = None
+            self.obj_verts_n_hires, *_ = scale_to_bbox(obj_verts_hires, scaling_fn=scaling_fn)
 
         # force closure loss
         self.fc_contact_ind = None
@@ -209,17 +215,19 @@ class TestTimeOptimize(LightningModule):
         test_batch = ObjectData.collate_fn(test_batch)
         data = ObjectData(**test_batch)
         data = data.to(self.device_manual)
-        self.object_fidx = data.fidx
-        object_verts = data.object_verts
-        self.object_faces = data.object_faces
-        self.object_aux = data.object_aux
+        self.obj_fidx = data.fidx
+        obj_verts = data.object_verts
+        obj_verts_hires = data.object_verts_highres
+        self.obj_faces = data.object_faces
+        self.obj_faces_hires = data.object_faces_highres
+        self.obj_aux_hires = data.object_aux_highres
         sampled_verts = data.sampled_verts
         self.contact_object = data.contacts
         self.partition_object = data.partitions
 
         # normalize to center
-        self.object_verts_n, self.sampled_verts_n = self.normalize_ho(
-            object_verts, sampled_verts
+        self.obj_verts_n, self.sampled_verts_n, self.obj_verts_n_hires = self.normalize_ho(
+            obj_verts, sampled_verts, obj_verts_hires
         )
 
         # metric logging
@@ -227,7 +235,8 @@ class TestTimeOptimize(LightningModule):
 
         return
 
-    def normalize_ho(self, object_verts, sampled_verts):
+    def normalize_ho(self, object_verts, sampled_verts, obj_verts_hires):
+        # object verts
         object_verts_n, object_center, object_max_norm = batch_normalize_mesh(
             object_verts
         )
@@ -235,6 +244,8 @@ class TestTimeOptimize(LightningModule):
             logger.debug(
                 f"hand {self.handresult.fidxs[b]}, [object] center: {object_center[b]}, max_norm: {object_max_norm[b]:.3f}"
             )
+
+        # sampled verts (ContactGen)
         if sampled_verts is not None:
             sampled_verts_n = (sampled_verts.padded - object_center) / object_max_norm
             for i in range(sampled_verts_n.shape[0]):
@@ -242,7 +253,15 @@ class TestTimeOptimize(LightningModule):
             sampled_verts_n.padded = sampled_verts_n
         else:
             sampled_verts_n = None
-        return object_verts_n, sampled_verts_n
+        
+        # object verts hires
+        obj_verts_n_hires = (obj_verts_hires.padded - object_center) / object_max_norm.unsqueeze(1).unsqueeze(2)
+        for i in range(obj_verts_n_hires.shape[0]):
+            obj_verts_n_hires[i, obj_verts_hires.split_sizes[i] :] = 0.0
+        obj_verts_hires.padded = obj_verts_n_hires
+        obj_verts_n_hires = obj_verts_hires
+
+        return object_verts_n, sampled_verts_n, obj_verts_n_hires
 
     def train_dataloader(self):
         # loop Niters times
@@ -258,51 +277,63 @@ class TestTimeOptimize(LightningModule):
     def configure_optimizers(self):
         if self.opt.scale_clip[0] != self.opt.scale_clip[1]:
             optimizer = torch.optim.Adam(
-                [self.s_params, self.t_params, self.R_params], lr=self.opt.lr
+                [self.s_params, self.t_params, self.R_params], lr=self.opt.lr_init
             )
         else:
             optimizer = torch.optim.Adam(
-                [self.t_params, self.R_params], lr=self.opt.lr
+                [self.t_params, self.R_params], lr=self.opt.lr_init
             )
-        return optimizer
+        lr_scheduler = {
+            'scheduler': getattr(torch.optim.lr_scheduler, self.opt.lr_type)(optimizer, **self.opt.lr_params),
+            'interval': 'step',
+            'frequency': 1,
+        }
+        return [optimizer], [lr_scheduler]
 
     def on_after_batch_transfer(self, batch, dataloader_idx):
         self.min_losses = self.min_losses.to(self.device_manual)
         return batch
 
+    def transform_padded(self, transform, padded_tensor):
+        new_padded = transform.transform_points(padded_tensor.padded)
+        new_padded = PaddedTensor.from_padded(new_padded, padded_tensor.split_sizes)
+        return new_padded
+    
     def forward(self, batch, batch_idx):
         self.batch_idx = batch_idx
 
         # transform the object verts
         # s_sigmoid = torch.sigmoid(self.s_params) * 3.0 - 1.5  # all4000
-        # s_sigmoid = torch.sigmoid(self.s_params) * 2.4 - 1.2  # selector4000
+        # self.s_sigmoid = torch.sigmoid(self.s_params) * 2.4 - 1.2  # selector4000
         min_s = self.opt.scale_clip[0]
         max_s = self.opt.scale_clip[1]
-        s_clipped = min_s + (torch.tanh(self.s_params) + 1) * 0.5 * (max_s - min_s)  # differ_sim4000
-        R_matrix = axis_angle_to_matrix(self.R_params)
-        t = (
+        self.s_sigmoid = min_s + (torch.tanh(self.s_params) + 1) * 0.5 * (max_s - min_s)  # differ_sim4000
+        self.R_matrix = axis_angle_to_matrix(self.R_params)
+        transform = (
             Transform3d(device=self.device_manual)
-            .scale(s_clipped)
-            .rotate(R_matrix)
+            .scale(self.s_sigmoid)
+            .rotate(self.R_matrix)
             .translate(self.t_params)
         )
-        new_obj_verts_n = t.transform_points(self.object_verts_n.padded)
-        new_obj_verts_n = PaddedTensor.from_padded(
-            new_obj_verts_n, self.object_verts_n.split_sizes
-        )
+        # new_obj_verts_n = transform.transform_points(self.obj_verts_n.padded)
+        # new_obj_verts_n = PaddedTensor.from_padded(
+            # new_obj_verts_n, self.obj_verts_n.split_sizes
+        # )
+        new_obj_verts_n = self.transform_padded(transform, self.obj_verts_n)
         if self.sampled_verts_n is not None:
-            new_sampled_verts_n = t.transform_points(self.sampled_verts_n.padded)
-            new_sampled_verts_n = PaddedTensor.from_padded(
-                new_sampled_verts_n, self.sampled_verts_n.split_sizes
-            )
+            # new_sampled_verts_n = transform.transform_points(self.sampled_verts_n.padded)
+            # new_sampled_verts_n = PaddedTensor.from_padded(
+            #     new_sampled_verts_n, self.sampled_verts_n.split_sizes
+            # )
+            new_sampled_verts_n = self.transform_padded(transform, self.sampled_verts_n)
         else:
             new_sampled_verts_n = None
 
-        return new_obj_verts_n, new_sampled_verts_n, R_matrix, s_clipped
+        return new_obj_verts_n, new_sampled_verts_n, transform
 
     def training_step(self, batch, batch_idx):
         batch_size = self.handresult.batch_size
-        new_obj_verts_n, new_sampled_verts_n, R_matrix, s_clipped = self(
+        new_obj_verts_n, new_sampled_verts_n, transform = self(
             batch, batch_idx
         )
         
@@ -336,7 +367,7 @@ class TestTimeOptimize(LightningModule):
             self.handresult.verts_n,
             self.handresult.faces,
             new_obj_verts_n,
-            self.object_faces,
+            self.obj_faces,
             sampled_verts=new_sampled_verts_n,
             contact_object=self.contact_object,
             partition_object=self.partition_object,
@@ -368,29 +399,29 @@ class TestTimeOptimize(LightningModule):
                     self.rejection_count[~accept] += 1
 
         # logging
-        R_euler = matrix_to_euler_angles(R_matrix, "XYZ")
+        # R_euler = matrix_to_euler_angles(self.R_matrix, "XYZ")
         logs = {
-            "loss": loss.item(),
-            "attraction_loss": attraction_loss.item(),
-            "repulsion_loss": repulsion_loss.item(),
+            f"loss_{self.handresult.fidxs[0].cpu().numpy()}": loss.item(),
+            f"attraction_loss_{self.handresult.fidxs[0].cpu().numpy()}": attraction_loss.item(),
+            f"repulsion_loss_{self.handresult.fidxs[0].cpu().numpy()}": repulsion_loss.item(),
             "iter": batch_idx,
         }
         if self.opt.loss.force_closure_weight > 0:
-            logs["new_force_loss"] = new_force_loss.item()
-        for b in range(batch_size):
-            logs[f"scale_{self.handresult.fidxs[b]}"] = s_clipped[b].item()
-            logs[f"translate_x_{self.handresult.fidxs[b]}"] = self.t_params[b, 0].item()
-            logs[f"translate_y_{self.handresult.fidxs[b]}"] = self.t_params[b, 1].item()
-            logs[f"translate_z_{self.handresult.fidxs[b]}"] = self.t_params[b, 2].item()
-            logs[f"rotate_x_{self.handresult.fidxs[b]}"] = R_euler[b, 0].item()
-            logs[f"rotate_y_{self.handresult.fidxs[b]}"] = R_euler[b, 1].item()
-            logs[f"rotate_z_{self.handresult.fidxs[b]}"] = R_euler[b, 2].item()
+            logs[f"force_loss_{self.handresult.fidxs[0].cpu().numpy()}"] = new_force_loss.item()
+        # for b in range(batch_size):
+        #     logs[f"scale_{self.handresult.fidxs[b]}"] = self.s_sigmoid[b].item()
+        #     logs[f"translate_x_{self.handresult.fidxs[b]}"] = self.t_params[b, 0].item()
+        #     logs[f"translate_y_{self.handresult.fidxs[b]}"] = self.t_params[b, 1].item()
+        #     logs[f"translate_z_{self.handresult.fidxs[b]}"] = self.t_params[b, 2].item()
+        #     logs[f"rotate_x_{self.handresult.fidxs[b]}"] = R_euler[b, 0].item()
+        #     logs[f"rotate_y_{self.handresult.fidxs[b]}"] = R_euler[b, 1].item()
+        #     logs[f"rotate_z_{self.handresult.fidxs[b]}"] = R_euler[b, 2].item()
         self.log_dict(
             logs,
             prog_bar=True,
             logger=True,
             on_step=True,
-            on_epoch=True,
+            on_epoch=False,
         )
 
         # monitoring
@@ -400,24 +431,27 @@ class TestTimeOptimize(LightningModule):
             + self.opt.loss.force_closure_weight * new_fc_loss.losses
         )
 
-        outputs = dict(loss=loss, new_obj_verts_n=new_obj_verts_n)
+        outputs = dict(loss=loss, transform=transform)
         return outputs
 
     def test_step(self, batch, batch_idx):
         scale_cm = (
             self.handresult.max_norm[0].item() * 100
         )  # should be half the hand length
-        new_obj_verts_n, new_sampled_verts_n, *_ = self(batch, batch_idx)
+        _, new_sampled_verts_n, transform = self(batch, batch_idx)
         if self.handresult.verts_n.shape[0] > 1:
             logger.error(f"Batch size > 1 is not supported for evaluation.")
             raise ValueError
+        
+        # transform the original
+        obj_verts_n_hires = self.transform_padded(transform, self.obj_verts_n_hires)
 
         # contact ratio
         *_, contact_info, metrics = self.contact_loss(
             self.handresult.verts_n,
             self.handresult.faces,
-            new_obj_verts_n,
-            self.object_faces,
+            obj_verts_n_hires,
+            self.obj_faces_hires,
             sampled_verts=new_sampled_verts_n,
             contact_object=self.contact_object,
             partition_object=self.partition_object,
@@ -437,9 +471,9 @@ class TestTimeOptimize(LightningModule):
         hand_fidx = self.handresult.fidxs.cpu().numpy()[0]
         hand_verts_n_cpu = self.handresult.verts_n.cpu().numpy()[0]
         hand_faces_cpu = self.handresult.faces.verts_idx.cpu().numpy()[0]
-        obj_fidx = self.object_fidx[0]
-        obj_verts_n_cpu = new_obj_verts_n.padded.cpu().numpy()[0]
-        obj_faces_cpu = self.object_faces.verts_idx.padded.cpu().numpy()[0]
+        obj_fidx = self.obj_fidx[0]
+        obj_verts_n_cpu = obj_verts_n_hires.padded.cpu().numpy()[0]
+        obj_faces_cpu = self.obj_faces_hires.verts_idx.padded.cpu().numpy()[0]
 
         # penetration
         pene_depth = metrics["max_penetr"] * scale_cm
@@ -501,7 +535,7 @@ class TestTimeOptimize(LightningModule):
 
     def on_before_optimizer_step(self, optimizer):
         # save checkpoint
-        if self.batch_idx > self.opt.plot.tolerance_step:
+        if self.batch_idx > self.opt.plot.tolerance_step or self.batch_idx == 0:
             update_mask = self.current_losses < (
                 self.min_losses - self.opt.plot.tolerance_difference
             )
@@ -511,7 +545,7 @@ class TestTimeOptimize(LightningModule):
                     out_ckpt_path = os.path.join(
                         self.cfg.ckpt_dir,
                         "hand_{:08d}_object_{}_best.json".format(
-                            self.handresult.fidxs[b], self.object_fidx[b]
+                            self.handresult.fidxs[b], self.obj_fidx[b]
                         ),
                     )
                     checkpoint = {
@@ -531,29 +565,29 @@ class TestTimeOptimize(LightningModule):
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
         batch_size = self.handresult.batch_size
-        new_obj_verts_n = outputs["new_obj_verts_n"]
+        transform = outputs["transform"]
+        obj_verts_n_hires = self.transform_padded(transform, self.obj_verts_n_hires)
 
-        if batch_idx > self.opt.plot.tolerance_step:
+        if batch_idx > self.opt.plot.tolerance_step or batch_idx == 0:
             # save mesh
             merged_meshes = None
             if self.update_mask.any() or batch_idx % self.opt.plot.mesh_period == 0:
                 is_textured = self.handresult.dataset.nimble
-                new_obj_verts = PaddedTensor.from_padded(
-                    new_obj_verts_n.padded.detach(), new_obj_verts_n.split_sizes
+                obj_verts_hires = PaddedTensor.from_padded(
+                    obj_verts_n_hires.padded.detach(), obj_verts_n_hires.split_sizes
                 )
-                new_obj_verts.padded = (
-                    new_obj_verts.padded * self.handresult.max_norm[:, None, None]
+                obj_verts_hires.padded = (
+                    obj_verts_hires.padded * self.handresult.max_norm[:, None, None]
                 ) + self.handresult.center
-                for b in range(batch_size):
-                    new_obj_verts.padded[b, new_obj_verts_n.split_sizes[b] :] = 0.0
+                obj_verts_hires.clean(obj_verts_n_hires.split_sizes)
                 merged_meshes = merge_ho(
                     is_textured,
                     self.handresult.original_verts,
                     self.handresult.original_faces,
                     self.handresult.aux,
-                    new_obj_verts,
-                    self.object_faces,
-                    self.object_aux,
+                    obj_verts_hires,
+                    self.obj_faces_hires,
+                    self.obj_aux_hires,
                 )
                 p3d_io = IO()
                 for b in range(batch_size):
@@ -561,14 +595,16 @@ class TestTimeOptimize(LightningModule):
                         self.update_mask[b]
                         or batch_idx % self.opt.plot.mesh_period == 0
                     ):
-                        if self.update_mask[b]:
+                        if batch_idx == 0:
+                            tag = "init"
+                        elif self.update_mask[b]:
                             tag = "best"
                         else:
                             tag = f"iter_{batch_idx:05d}"
                         out_obj_path = os.path.join(
                             self.cfg.results_dir,
                             "hand_{}_object_{}_{}.obj".format(
-                                self.handresult.fidxs[b], self.object_fidx[b], tag
+                                self.handresult.fidxs[b], self.obj_fidx[b], tag
                             ),
                         )  # assume object batch size is 1
                         p3d_io.save_mesh(
@@ -580,20 +616,19 @@ class TestTimeOptimize(LightningModule):
             if self.update_mask.any() or batch_idx % self.opt.plot.render_period == 0:
                 if merged_meshes is None:
                     is_textured = self.handresult.dataset.nimble
-                    new_obj_verts = new_obj_verts_n.padded.detach()
-                    new_obj_verts = (
-                        new_obj_verts * self.handresult.max_norm
+                    obj_verts_hires = obj_verts_n_hires.padded.detach()
+                    obj_verts_hires = (
+                        obj_verts_hires * self.handresult.max_norm
                     ) + self.handresult.center
-                    for b in range(batch_size):
-                        new_obj_verts[b, new_obj_verts_n.split_sizes[b] :] = 0.0
+                    obj_verts_hires.clean(obj_verts_n_hires.split_sizes)
                     merged_meshes = merge_ho(
                         is_textured,
                         self.handresult.original_verts,
                         self.handresult.original_faces,
                         self.handresult.aux,
-                        new_obj_verts,
-                        self.object_faces,
-                        self.object_aux,
+                        obj_verts_hires,
+                        self.obj_faces_hires,
+                        self.obj_aux_hires,
                     )
 
                 merged_meshes.verts_normals_packed()
@@ -604,7 +639,9 @@ class TestTimeOptimize(LightningModule):
                         self.update_mask[b]
                         or batch_idx % self.opt.plot.mesh_period == 0
                     ):
-                        if self.update_mask[b]:
+                        if batch_idx == 0:
+                            tag = "init"
+                        elif self.update_mask[b]:
                             tag = "best"
                         else:
                             tag = f"iter_{batch_idx:05d}"
@@ -612,7 +649,7 @@ class TestTimeOptimize(LightningModule):
                         out_rendered_path = os.path.join(
                             self.cfg.results_dir,
                             "hand_{}_object_{}_{}_rendering.png".format(
-                                self.handresult.fidxs[b], self.object_fidx[b], tag
+                                self.handresult.fidxs[b], self.obj_fidx[b], tag
                             ),
                         )  # assume object batch size is 1
                         Image.fromarray(rendered_images[b]).save(out_rendered_path)
@@ -627,7 +664,7 @@ class TestTimeOptimize(LightningModule):
                         out_blended_path = os.path.join(
                             self.cfg.results_dir,
                             "hand_{}_object_{}_{}_blended.png".format(
-                                self.handresult.fidxs[b], self.object_fidx[b], tag
+                                self.handresult.fidxs[b], self.obj_fidx[b], tag
                             ),
                         )  # assume object batch size is 1
                         Image.fromarray(blended_image).save(out_blended_path)
@@ -639,7 +676,7 @@ class TestTimeOptimize(LightningModule):
                 if self.update_mask.any() or is_period:
                     self.contact_loss.plot_fc_normal(
                         hand_fidxs=self.handresult.fidxs,
-                        object_fidxs=self.object_fidx,
+                        object_fidxs=self.obj_fidx,
                         iter=batch_idx,
                         denorm_center=self.handresult.center,
                         denorm_scale=self.handresult.max_norm,
@@ -650,11 +687,11 @@ class TestTimeOptimize(LightningModule):
         # plot point cloud
         if batch_idx % self.opt.plot.pc_period == self.opt.plot.pc_period - 1:
             for b in range(self.handresult.batch_size):
-                new_object_size = new_obj_verts_n.split_sizes[b]
+                new_object_size = obj_verts_n_hires.split_sizes[b]
                 verts_n = torch.cat(
                     [
                         self.handresult.verts_n[b],
-                        new_obj_verts_n.padded[b, :new_object_size],
+                        obj_verts_n_hires.padded[b, :new_object_size],
                     ],
                     dim=0,
                 )
@@ -664,10 +701,10 @@ class TestTimeOptimize(LightningModule):
                 )
         
         # save contact point cloud
-        if batch_idx % self.opt.plot.contact_period == 0:
+        if batch_idx % self.opt.plot.contact_period == self.opt.plot.contact_period - 1:
             self.contact_loss.plot_contact(
                 hand_fidxs=self.handresult.fidxs,
-                object_fidxs=self.object_fidx,
+                object_fidxs=self.obj_fidx,
                 iter=batch_idx,
             )
 

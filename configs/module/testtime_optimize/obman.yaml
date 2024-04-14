@@ -1,11 +1,16 @@
-Niters: 1000  # 1000
-lr: 0.08
-scale_clip: [0.8, 1.0]
-start_fidx: null
-end_fidx: null
+Niters: 4000  # 1000
+scale_clip: [0.8, 1.02]
+start_fidx: 0
+end_fidx: 100
+
+lr_init: 0.2
+lr_type: "StepLR"
+lr_params:
+  step_size: 500
+  gamma: 0.8
 
 plot:
-  tolerance_step: 200 # 200
+  tolerance_step: 300 # 200
   tolerance_difference: 0.0005
   mesh_period: 10000
   render_period: 10000
@@ -14,9 +19,9 @@ plot:
   contact_period: 1000000
 
 loss:
-  attraction_weight: 0.8
+  attraction_weight: 1
   repulsion_weight: 1
-  force_closure_weight: 0.03
+  force_closure_weight: 0.03  # 0.03
 
 contactloss:
   contact_thresh: 5

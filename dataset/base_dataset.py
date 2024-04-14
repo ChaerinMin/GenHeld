@@ -1,17 +1,24 @@
-import glob
 import logging
 import os
 import pickle
 import random
+import glob
+import subprocess
 
 import cv2
 import numpy as np
 import open3d as o3d
 import torch
-from pytorch3d.io import load_obj, load_ply
+from pytorch3d.io import load_obj
 from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
 from torch.utils.data import Dataset
 from matplotlib import pyplot as plt
+from pytorch3d.io import load_obj, load_ply, save_obj
+from torchvision import transforms
+from pytorch3d.io.experimental_gltf_io import load_meshes
+from pytorch3d.structures import join_meshes_as_scene
+from iopath.common.file_io import PathManager
+import pymeshlab as ml
 
 from dataset import _P3DFaces
 from visualization import bones
@@ -126,7 +133,7 @@ class HandDataset(Dataset):
             or not os.path.exists(xyz_save_path)
             or not os.path.exists(mano_r_path)
             or not os.path.exists(mano_joint_r_path)
-            or self.opt.refresh_data
+            or self.opt.refresh
         ):
             image_hifihr = (
                 image.permute(2, 0, 1).unsqueeze(0).to(self.device).to(torch.float32)
@@ -140,11 +147,11 @@ class HandDataset(Dataset):
             hand_textures = output["textures"]
             mano_verts_r = output["mano_verts_r"].squeeze(0)
             mano_verts_r[:, 2] *= -1
-            mano_verts_r[:, [0,2]] = mano_verts_r[:, [2,0]]
+            mano_verts_r[:, [0, 2]] = mano_verts_r[:, [2, 0]]
             mano_verts_r = mano_verts_r.cpu().numpy()
             mano_joints_r = output["mano_joints_r"].squeeze(0)
             mano_joints_r[:, 2] *= -1
-            mano_joints_r[:, [0,2]] = mano_joints_r[:, [2,0]]
+            mano_joints_r[:, [0, 2]] = mano_joints_r[:, [2, 0]]
             mano_joints_r = mano_joints_r.cpu().numpy()
             xyz = output["xyz"]
 
@@ -398,29 +405,133 @@ class ObjectDataset(Dataset):
         self.object = opt
         return
 
-    def __len__(self):
-        return len(self.fidxs)
-
     def __getitem__(self, idx):
         fidx = self.fidxs[idx]
 
         # object
         object_ext = os.path.splitext(self.object.path % fidx)[1]
+        glb_path = os.path.splitext(self.object.path % fidx)[0] + ".glb"
+        texture_path = os.path.splitext(self.object.path % fidx)[0] + ".png"
         if object_ext == ".obj":
-            object_verts, object_faces, object_aux = load_obj(
-                self.object.path % fidx, load_textures=True
-            )
+            if os.path.exists(self.object.path % fidx) and not self.object.refresh:
+                # texture size
+                if self.object.texture_size is not None:
+                    texture_img = cv2.imread(texture_path)
+                    if texture_img is None:
+                        texture_path = os.path.splitext(self.object.path % fidx)[0] + ".jpg"
+                        texture_img = cv2.imread(texture_path)
+                    if texture_img is None:
+                        logger.error(f"Texture image {texture_path} not found")
+                        raise FileNotFoundError
+                    if texture_img.shape[:2] != self.object.texture_size:
+                        texture_img = cv2.resize(texture_img, self.object.texture_size)
+                        assert cv2.imwrite(texture_path, texture_img), "Failed to save"
+                # load
+                object_verts_highres, object_faces_highres, object_aux_highres = (
+                    load_obj(self.object.path % fidx, load_textures=True)
+                )
+            elif os.path.exists(glb_path):
+                # try:
+                object_meshes = load_meshes(glb_path, PathManager())
+                for i in range(len(object_meshes)):
+                    object_meshes[i][1].textures.align_corners = False
+                object_meshes = join_meshes_as_scene(
+                    [mesh[1] for mesh in object_meshes]
+                )
+                object_verts_highres = object_meshes.verts_padded()[0]
+                verts_idx = object_meshes.faces_padded()[0]
+                verts_uvs = object_meshes.textures.verts_uvs_padded()[0]
+                faces_uvs = object_meshes.textures.faces_uvs_padded()[0]
+                assert (
+                    len(object_meshes.textures.maps_padded()) == 1
+                ), "Only support one texture image for each mesh"
+                texture_images = object_meshes.textures.maps_padded()[0]
+                resizer = transforms.Resize(self.object.texture_size, antialias=True)
+                texture_images = (
+                    resizer(texture_images.permute(2, 0, 1))
+                    .permute(1, 2, 0)
+                    .contiguous()
+                )
+                normals = object_meshes.verts_normals_padded()[0]
+                normals_idx = object_meshes.faces_normals_padded()[0]
+                save_obj(
+                    self.object.path % fidx,
+                    object_verts_highres,
+                    verts_idx,
+                    verts_uvs=verts_uvs,
+                    faces_uvs=faces_uvs,
+                    texture_map=texture_images,
+                    normals=normals,
+                    faces_normals_idx=normals_idx,
+                )
+                object_verts_highres, object_faces_highres, object_aux_highres = (
+                    load_obj(self.object.path % fidx, load_textures=True)
+                )
+            else:
+                logger.error(f"Object file {self.object.path % fidx} not found")
+                raise FileNotFoundError
         elif object_ext == ".ply":
-            if self.nimble:
-                logger.error("We only support .obj object when nimble=True")
+            if self.nimble or self.object.deci:
+                logger.error(
+                    "We only support .obj object when nimble=True or deci=True"
+                )
                 raise ValueError
-            object_verts, object_faces = load_ply(self.object.path % fidx)
-            object_aux = None
+            object_verts_highres, object_faces_highres = load_ply(
+                self.object.path % fidx
+            )
+            object_aux_highres = None
         else:
             raise ValueError(f"object file extension {object_ext} not supported")
 
+        # decimation
+        if (
+            self.object.deci
+            and object_faces_highres.verts_idx.shape[0] > self.object.deci_faces
+        ):
+            deci_path = os.path.splitext(self.object.path % fidx)[0] + "_deci.obj"
+            if not os.path.exists(deci_path) or self.object.refresh:
+                deci = ml.MeshSet()
+                deci.load_new_mesh(self.object.path % fidx)
+                deci.meshing_decimation_quadric_edge_collapse_with_texture(
+                    targetfacenum=self.object.deci_faces, preserveboundary=True
+                )
+                perc = 2
+                cnt = 1
+                while deci.mesh(0).face_number() > self.object.deci_faces:
+                    deci.meshing_decimation_clustering(
+                        threshold=ml.PercentageValue(perc * cnt)
+                    )
+                    cnt += 1
+                    if cnt > 3:
+                        break
+                deci.save_current_mesh(deci_path)
+                # add texture image
+                with open(deci_path + ".mtl", "r") as f:
+                    lines = f.readlines()
+                if not any("map_Kd" in line for line in lines):
+                    with open(deci_path + ".mtl", "a") as f:
+                        line = f"map_Kd {os.path.basename(texture_path)}\n"
+                        f.write(line)
+                logger.info(f"Decimated {self.object.path % fidx} to {deci_path}")
+            object_verts, object_faces, object_aux = load_obj(
+                deci_path, load_textures=True
+            )
+            if self.object.deci_as_output:
+                object_verts_highres = object_verts
+                object_faces_highres = object_faces
+                object_aux_highres = object_aux
+        else:
+            object_verts = object_verts_highres
+            object_faces = object_faces_highres
+            object_aux = object_aux_highres
+
+        fidx = fidx.replace("/", "_")
         return_dict = dict(
-            fidx=fidx, object_verts=object_verts, object_faces=object_faces
+            fidx=fidx,
+            object_verts=object_verts,
+            object_verts_highres=object_verts_highres,
+            object_faces=object_faces,
+            object_faces_highres=object_faces_highres,
         )
 
         # add only if not None
@@ -428,7 +539,11 @@ class ObjectDataset(Dataset):
             object_aux = {
                 k: v for k, v in object_aux._asdict().items() if v is not None
             }
+            object_aux_highres = {
+                k: v for k, v in object_aux_highres._asdict().items() if v is not None
+            }
             return_dict["object_aux"] = object_aux
+            return_dict["object_aux_highres"] = object_aux_highres
 
         # ContactGen
         if self.object.sampled_verts_path:

@@ -302,6 +302,7 @@ class ReconstructHand(LightningModule):
         callbacks = [LearningRateMonitor(logging_interval="step")]
         loggers = [
             WandbLogger(
+                name=f"hand_{handresult.fidxs[0]}",
                 project="GenHeld_TTA",
                 offline=self.cfg.debug,
                 save_dir=self.cfg.output_dir,

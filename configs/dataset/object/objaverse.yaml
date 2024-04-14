@@ -1,0 +1,15 @@
+_target_: dataset.object_dataset.ObjaverseDataset
+
+opt:
+  refresh_download: False
+  refresh: False
+
+  path: "data/Objaverse/%s.obj"
+  sampled_verts_path: ""
+  contacts_path: ""
+  partitions_path: ""
+  
+  texture_size: [1024, 1024]
+  deci: True
+  deci_faces: 5000
+  deci_as_output: False

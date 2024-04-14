@@ -15,7 +15,8 @@ from pytorch3d.transforms import Rotate, axis_angle_to_matrix
 
 from submodules.HiFiHR.utils.manopth.manolayer import ManoLayer
 from submodules.HiFiHR.utils.NIMBLE_model.myNIMBLELayer import mano_v2j_reg
-from utils import get_NN
+from module.select_object import SelectObject
+from utils import get_NN, get_bbox, get_hand_size
 from visualization import bbox_lines, bones
 
 from .base_dataset import SelectorDataset
@@ -119,7 +120,7 @@ class DexYCBDataset(SelectorDataset):
                 # class_vec
                 class_vec = [0] * len(self.categories)
                 class_path = os.path.join(sequence, "class_gt.txt")
-                if os.path.exists(class_path) and not opt.refresh_data:
+                if os.path.exists(class_path) and not opt.refresh:
                     with open(class_path, "r") as f:
                         cate_idx = int(f.read())
                     logger.info(f"Loaded {class_path}")
@@ -149,7 +150,7 @@ class DexYCBDataset(SelectorDataset):
                 hand_joints_r_path = os.path.join(sequence, "hand_joint_r.npy")
                 bone_vis_path = os.path.join(sequence, "hand_bone_r_vis.ply")
                 joint_vis_path = os.path.join(sequence, "hand_joint_r_vis.ply")
-                if os.path.exists(hand_mesh_r_path) and not opt.refresh_data:
+                if os.path.exists(hand_mesh_r_path) and not opt.refresh:
                     hand_verts_r, _, _ = load_obj(hand_mesh_r_path, load_textures=False)
                     hand_joints_r = torch.tensor(np.load(hand_joints_r_path))
                     logger.info(f"Loaded {hand_mesh_r_path}")
@@ -203,7 +204,7 @@ class DexYCBDataset(SelectorDataset):
                 object_vis_path = os.path.join(sequence, "object_r_vis.ply")
                 bbox_vis_path = os.path.join(sequence, "object_bbox_vis.ply")
                 io = IO()
-                if os.path.exists(object_r_path) and not opt.refresh_data:
+                if os.path.exists(object_r_path) and not opt.refresh:
                     object_pc_r = io.load_pointcloud(object_r_path)
                     logger.info(f"Loaded {object_r_path}")
                     with open(bbox_path, "r") as f:
@@ -248,15 +249,17 @@ class DexYCBDataset(SelectorDataset):
                         verts_r, 0, torch.sort(verts_r[:, 2])[1]
                     )
                     # oriented bbox
-                    verts_o3d = o3d.utility.Vector3dVector(verts_r.numpy())
-                    bbox = o3d.geometry.OrientedBoundingBox.create_from_points(
-                        verts_o3d
-                    )
-                    bbox = bbox.get_minimal_oriented_bounding_box()
-                    bbox_corners = bbox.get_box_points()
-                    bbox_size = bbox.extent
-                    bbox_size = np.sort(bbox_size)[::-1]
-                    hand_size = torch.norm(hand_joints_r[17] - hand_joints_r[0]).numpy()
+                    # verts_o3d = o3d.utility.Vector3dVector(verts_r.numpy())
+                    # bbox = o3d.geometry.OrientedBoundingBox.create_from_points(
+                    #     verts_o3d
+                    # )
+                    # bbox = bbox.get_minimal_oriented_bounding_box()
+                    # bbox_corners = bbox.get_box_points()
+                    # bbox_size = bbox.extent
+                    # bbox_size = np.sort(bbox_size)[::-1]
+                    bbox_size, bbox_corners = get_bbox(verts_r)
+                    # hand_size = torch.norm(hand_joints_r[17] - hand_joints_r[0]).numpy()
+                    hand_size = get_hand_size(hand_joints_r.unsqueeze(0))[0].numpy()
                     # save
                     object_pc_r = Pointclouds(points=[verts_r])
                     object_pc_r.estimate_normals(assign_to_self=True)
@@ -269,6 +272,7 @@ class DexYCBDataset(SelectorDataset):
                         f.write(cate_name)
                     logger.info(f"Saved {bbox_path}")
                     # visualize
+                    verts_o3d = o3d.utility.Vector3dVector(verts_r.numpy())
                     verts_o3d = o3d.geometry.PointCloud(verts_o3d)
                     verts_o3d.colors = o3d.utility.Vector3dVector(object_color)
                     o3d.io.write_point_cloud(object_vis_path, verts_o3d)
@@ -280,16 +284,17 @@ class DexYCBDataset(SelectorDataset):
                     logger.info(f"Saved {bbox_vis_path}")
                 self.object_pcs_r.append(object_pc_r)
                 assert bbox_size[2] > 1e-8, "Invalid bbox size."
-                shape_code = torch.tensor(
-                    [
-                        # hand_size / bbox_size[2],
-                        # bbox_size[1] / bbox_size[2],
-                        # bbox_size[0] / bbox_size[1],
-                        bbox_size[2] / hand_size,
-                        bbox_size[1] / hand_size,
-                        bbox_size[0] / hand_size,
-                    ]
-                )
+                shape_code = SelectObject.create_shape_code(torch.tensor(bbox_size).unsqueeze(0), torch.tensor(hand_size).unsqueeze(0))
+                # shape_code = torch.tensor(
+                #     [
+                #         # hand_size / bbox_size[2],
+                #         # bbox_size[1] / bbox_size[2],
+                #         # bbox_size[0] / bbox_size[1],
+                #         bbox_size[2] / hand_size,
+                #         bbox_size[1] / hand_size,
+                #         bbox_size[0] / hand_size,
+                #     ]
+                # )
                 if cate_name in cate_to_shape:
                     cate_to_shape[cate_name].append(shape_code)
                 else:
@@ -300,7 +305,7 @@ class DexYCBDataset(SelectorDataset):
                 # hand_contacts
                 contact_vis_path = os.path.join(sequence, "hand_contact.ply")
                 contact_cache_path = os.path.join(sequence, "hand_contact_cache.pt")
-                if os.path.exists(contact_cache_path) and not opt.refresh_data:
+                if os.path.exists(contact_cache_path) and not opt.refresh:
                     hand_contact_r = torch.load(contact_cache_path)
                     logger.info(f"Loaded {contact_cache_path}")
                 else:

@@ -1,7 +1,7 @@
 _target_: dataset.hand_dataset.FreiHANDDataset
 
 opt:
-  refresh_data: True
+  refresh: True
 
   image: 
     path: "data/FreiHAND/evaluation/rgb/%08d.jpg"

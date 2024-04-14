@@ -41,20 +41,22 @@ def merge_ho(
                 f"Only support one texture image for each mesh, got {len(h_aux['texture_images'])}"
             )
             raise ValueError
+        h_material_name = list(h_aux["texture_images"].keys())[0]
         if len(o_aux["texture_images"]) > 1:
             logger.error(
                 f"Only support one texture image for each mesh, got {len(o_aux['texture_images'])}"
             )
             raise ValueError
-        _, h_H, h_W, h_C = h_aux["texture_images"]["material_0"].shape
-        _, o_H, o_W, o_C = o_aux["texture_images"]["material_0"].shape
+        o_material_name = list(o_aux["texture_images"].keys())[0]
+        _, h_H, h_W, h_C = h_aux["texture_images"][h_material_name].shape
+        _, o_H, o_W, o_C = o_aux["texture_images"][o_material_name].shape
         assert h_C == o_C == 3
         max_H = max(h_H, o_H)
         texture_images = torch.ones(
             (batch_size, max_H, h_W + o_W, h_C), dtype=torch.float32
         )
-        texture_images[:, :h_H, :h_W] = h_aux["texture_images"]["material_0"]
-        texture_images[:, :o_H, h_W:] = o_aux["texture_images"]["material_0"]
+        texture_images[:, :h_H, :h_W] = h_aux["texture_images"][h_material_name]
+        texture_images[:, :o_H, h_W:] = o_aux["texture_images"][o_material_name]
 
         # vt
         h_vt, o_vt = (

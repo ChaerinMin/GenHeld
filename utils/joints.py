@@ -72,3 +72,12 @@ def batch_joint_transform(
         torch.matmul(transforms, joints_homogen), [3, 0, 0, 0, 0, 0, 0, 0])
 
     return posed_joints, rel_transforms
+
+
+def get_hand_size(mano_joints):
+    '''
+    mano_joints: torch.Tensor (B, 21, 3)
+    Return: torch.Tensor (B, )
+    '''
+    hand_size = torch.norm(mano_joints[:, 17] - mano_joints[:, 0], dim=1)
+    return hand_size

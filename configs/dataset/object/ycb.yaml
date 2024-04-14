@@ -1,7 +1,13 @@
 _target_: dataset.object_dataset.YCBDataset
 
 opt:
+  refresh: False
+
   path: "data/YCB/%s/google_16k/textured.obj"
   sampled_verts_path: ""  # "/dev/hdd/contactgen/exp/demo_results/obj_verts_%01d.npy"
   contacts_path:  ""  # "/dev/hdd/contactgen/exp/demo_results/contacts_%01d.npy"
   partitions_path: ""  # "/dev/hdd/contactgen/exp/demo_results/partition_%01d.npy"
+
+  deci: False
+  deci_faces: 0
+  deci_as_output: False

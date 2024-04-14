@@ -49,6 +49,30 @@ class SelectObject(LightningModule):
         )
         return
 
+    @staticmethod
+    def create_shape_code(bbox_lengths, hand_size):
+        '''
+        bbox_lengths: torch.Tensor (batch_size, 3)
+        hand_size: torch.Tensor (batch_size, )
+        '''
+        hand_size.device = bbox_lengths.device
+        shape_code = torch.stack([
+            bbox_lengths[:, 2] / hand_size,
+            bbox_lengths[:, 1] / hand_size,
+            bbox_lengths[:, 0] / hand_size,
+        ], dim=1)
+        return shape_code
+    
+    @staticmethod
+    def decompose_shape_code(shape_code, hand_size):
+        shape_code = shape_code.to(hand_size.device)
+        bbox_lengths = torch.stack([
+            shape_code[:, 2] * hand_size,
+            shape_code[:, 1] * hand_size,
+            shape_code[:, 0] * hand_size,
+        ], dim=1)
+        return bbox_lengths
+    
     def train_dataloader(self):
         if not hasattr(self, "train_dataset"):
             selector_dataset = instantiate(
@@ -318,16 +342,20 @@ class SelectObject(LightningModule):
             class_pred_name = [
                 random.choice(self.object_names[pred]) for pred in class_pred
             ]
+            shape_code_out = None
         elif self.opt.output == "shapecode":
             shape_code_pred = output_pred
             cateshapes = [pt[1:] for pt in self.cate_to_shape]
-            catenames = [pt[0] for pt in self.cate_to_shape]
+            cateshapes = torch.tensor(cateshapes).to(shape_code_pred.device)
+            catenames = np.array([pt[0] for pt in self.cate_to_shape])
             distances = weighted_distance(
                 cateshapes,
                 shape_code_pred[:, : self.opt.dim_input],
                 shape_code_pred[:, self.opt.dim_input :],
             )
-            class_pred_name = catenames[torch.argmin(distances, dim=1)]
+            class_pred = torch.argmin(distances, dim=1).cpu()
+            class_pred_name = catenames[class_pred.numpy()].tolist()
+            shape_code_out = shape_code_pred[:, : self.opt.dim_input]
         else:
             logger.error(f"Invalid selector output: {self.opt.output}")
             raise ValueError("Invalid selector output")
@@ -339,11 +367,11 @@ class SelectObject(LightningModule):
             hand_fidxs,
             class_pred,
             shape_code_pred,
-            class_pred_gt=None,
-            shape_code_gt=None,
+            class_gt=None,
+            shape_codes=None,
         )
-
-        return class_pred_name
+        
+        return class_pred_name, shape_code_out
 
     def loss(
         self,
@@ -495,15 +523,15 @@ class SelectObject(LightningModule):
                     save_dir,
                     f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_object_pred.ply",
                 )
-            elif self.trainer.state.fn == "predict":
-                visualize_path = os.path.join(
-                    self.cfg.results_dir, f"hand{fidxs[b]}_selector_object_pred.ply"
-                )
-            else:
-                logger.error(f"Invalid state for visualizing: {self.trainer.state.fn}")
-                raise ValueError
-            o3d.io.write_point_cloud(visualize_path, pc)
-            logger.info(f"Saved {visualize_path}")
+            # elif self.trainer.state.fn == "predict":
+            #     visualize_path = os.path.join(
+            #         self.cfg.results_dir, f"hand{fidxs[b]}_selector_object_pred.ply"
+            #     )
+            # else:
+            #     logger.error(f"Invalid state for visualizing: {self.trainer.state.fn}")
+            #     raise ValueError
+                o3d.io.write_point_cloud(visualize_path, pc)
+                logger.info(f"Saved {visualize_path}")
 
         # contact xyz pred
         contact_xyz_r = contact_xyz_r.cpu().points_list()
@@ -521,15 +549,15 @@ class SelectObject(LightningModule):
                     save_dir,
                     f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_contact_pred.ply",
                 )
-            elif self.trainer.state.fn == "predict":
-                visualize_path = os.path.join(
-                    self.cfg.results_dir, f"hand{fidxs[b]}_selector_contact.ply"
-                )
-            else:
-                logger.error(f"Invalid state for visualizing: {self.trainer.state.fn}")
-                raise ValueError
-            o3d.io.write_point_cloud(visualize_path, pc)
-            logger.info(f"Saved {visualize_path}")
+            # elif self.trainer.state.fn == "predict":
+            #     visualize_path = os.path.join(
+            #         self.cfg.results_dir, f"hand{fidxs[b]}_selector_contact.ply"
+            #     )
+            # else:
+            #     logger.error(f"Invalid state for visualizing: {self.trainer.state.fn}")
+            #     raise ValueError
+                o3d.io.write_point_cloud(visualize_path, pc)
+                logger.info(f"Saved {visualize_path}")
 
         # class pred
         class_pred = class_pred.cpu()
@@ -540,16 +568,16 @@ class SelectObject(LightningModule):
                     save_dir,
                     f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_class_pred.txt",
                 )
-            elif self.trainer.state.fn == "predict":
-                class_pred_path = os.path.join(
-                    self.cfg.results_dir, f"hand{fidxs[b]}_selector_class_pred.txt"
-                )
-            else:
-                logger.error(f"Invalid state for visualizing: {self.trainer.state.fn}")
-                raise ValueError
-            # save
-            with open(class_pred_path, "w") as f:
-                f.write(str(class_pred[b].item()))
+            # elif self.trainer.state.fn == "predict":
+            #     class_pred_path = os.path.join(
+            #         self.cfg.results_dir, f"hand{fidxs[b]}_selector_class_pred.txt"
+            #     )
+            # else:
+            #     logger.error(f"Invalid state for visualizing: {self.trainer.state.fn}")
+            #     raise ValueError
+                # save
+                with open(class_pred_path, "w") as f:
+                    f.write(str(class_pred[b].item()))
 
         # class gt
         if class_gt is not None:
@@ -571,12 +599,12 @@ class SelectObject(LightningModule):
                         save_dir,
                         f"{sign}{self.current_epoch:04d}_{self.global_step:05d}_subject{fidxs[b][18:20]}_{fidxs[b][-6:]}_shape_code_pred.txt",
                     )
-                elif self.trainer.state.fn == "predict":
-                    shape_code_pred_path = os.path.join(
-                        self.cfg.results_dir, f"hand{fidxs[b]}_selector_shape_code_pred.txt"
-                    )
-                with open(shape_code_pred_path, "w") as f:
-                    f.write(str(shape_code_pred[b]))
+                # elif self.trainer.state.fn == "predict":
+                #     shape_code_pred_path = os.path.join(
+                #         self.cfg.results_dir, f"hand{fidxs[b]}_selector_shape_code_pred.txt"
+                #     )
+                    with open(shape_code_pred_path, "w") as f:
+                        f.write(str(shape_code_pred[b]))
 
         # shape code gt
         if shape_codes is not None:
