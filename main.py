@@ -20,6 +20,7 @@ torch.set_float32_matmul_precision("medium")
 
 logger = logging.getLogger(__name__)
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["HYDRA_FULL_ERROR"] = "1"
 torch.autograd.set_detect_anomaly(True)
 logging.getLogger("pytorch_lightning").setLevel(logging.INFO)
 warnings.filterwarnings("ignore")

@@ -238,7 +238,7 @@ class ObjectData:
                 elif k == "texture_images":
                     coll_texture = []
                     for i in range(len(aux)):
-                        assert len(aux[i]) == 1, "Only one material is supported"
+                        assert len(aux[i]) == 1, f"fidx: {fidx[i]}. Only one material is supported"
                         coll_texture.append(next(iter(aux[i].values())))
                     aux = {'material_0': torch.stack(coll_texture)}
                 else:

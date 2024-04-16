@@ -30,5 +30,7 @@ lpips==0.1.4
 prettytable==3.9.0
 chumpy==0.70
 wandb==0.16.2
+pymeshlab
+objaverse==0.1.7
 git+https://github.com/facebookresearch/pytorch3d.git   # version 0.7.5
 -e submodules/Inpaint_Anything/segment_anything

@@ -152,4 +152,5 @@ class ObjaverseDataset(ObjectDataset):
             break
 
         self.fidxs = [fidx]
+        logger.info(f"Selected {fidx}")
         return 0

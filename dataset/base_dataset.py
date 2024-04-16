@@ -427,9 +427,13 @@ class ObjectDataset(Dataset):
                         texture_img = cv2.resize(texture_img, self.object.texture_size)
                         assert cv2.imwrite(texture_path, texture_img), "Failed to save"
                 # load
-                object_verts_highres, object_faces_highres, object_aux_highres = (
-                    load_obj(self.object.path % fidx, load_textures=True)
-                )
+                try:
+                    object_verts_highres, object_faces_highres, object_aux_highres = (
+                        load_obj(self.object.path % fidx, load_textures=True)
+                    )
+                except Exception as e:
+                    logger.error(f"Cannot load {self.object.path % fidx}")
+                    raise e
             elif os.path.exists(glb_path):
                 # try:
                 object_meshes = load_meshes(glb_path, PathManager())

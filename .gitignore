@@ -4,8 +4,15 @@ outputs/
 wandb/
 lightning_logs/
 tmp/
-assets/*
+assets/egohos
+assets/hifihr
+assets/lama
+assets/mano
+assets/nimble
+assets/sam
+assets/smplx
 data/FreiHAND
 data/YCB
 data/Objaverse
+data/DexYCB
 =

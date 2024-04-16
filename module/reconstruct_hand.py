@@ -108,14 +108,15 @@ class DiscriminateHand(Sampler):
                     f"Accepted {data['fidxs']}. Radius: {inscripted_radius:.3f}"
                 )
                 accepted_hands = np.load(self.accepted_hands_path)
-                assert accepted_hands[i, 0] == data["fidxs"]
+                hand_fidxs = data["fidxs"]
+                assert accepted_hands[i, 0] == hand_fidxs, f"accepted hands: {accepted_hands[i, 0]}, hand_fidxs: {hand_fidxs}"
                 accepted_hands[i, 1] = 1
                 np.save(self.accepted_hands_path, accepted_hands)
                 logger.debug(f"Updated {self.accepted_hands_path}")
                 yield i
             else:
                 logger.info(
-                    f"Rejected {data['fidxs']}. Radius: {inscripted_radius:.3f}"
+                    f"Rejected {data['fidxs']}. Radius: {inscripted_radius:.3f}" 
                 )
 
         return
