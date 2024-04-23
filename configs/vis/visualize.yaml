@@ -1,3 +1,6 @@
+where_to_render: "raw"  # choice: inpainted, raw
+what_to_render: "warped_object" # choice: hand_object, warped_object
+
 blend_type: "alpha_blending"  # choice: alpha_blending, poisson
 
 inpaint:

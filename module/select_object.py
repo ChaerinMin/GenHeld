@@ -165,7 +165,7 @@ class SelectObject(LightningModule):
     def on_predict_start(self):
         # object names
         object_names_path = os.path.join(
-            self.cfg.selector_ckpt_dir, "selector_objects.yaml"
+            self.cfg.selector.ckpt_dir, "selector_objects.yaml"
         )
         with open(object_names_path, "r") as f:
             self.object_names = yaml.safe_load(f)
@@ -173,7 +173,7 @@ class SelectObject(LightningModule):
 
         # cate_to_shape
         cate_to_shape_path = os.path.join(
-            self.cfg.selector_ckpt_dir, "selector_cate2shape.yaml"
+            self.cfg.selector.ckpt_dir, "selector_cate2shape.yaml"
         )
         with open(cate_to_shape_path, "r") as f:
             self.cate_to_shape = yaml.safe_load(f)

@@ -3,8 +3,6 @@ import logging
 import os
 import re
 from collections import namedtuple
-from dataclasses import dataclass
-from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -18,7 +16,6 @@ from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
 from rich.console import Console
 from scipy.optimize import minimize
-from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler
 
@@ -134,16 +131,10 @@ class ReconstructHand(LightningModule):
         self.hand_dataset = instantiate(
             cfg.hand_dataset, cfg=cfg, device=device, _recursive_=False
         )
-        self.inpainter = instantiate(cfg.vis.inpaint, device=device, _recursive_=False)
 
-        self.hifihr_intrinsics = torch.tensor(
-            [
-                [531.9495243872041, 0.0, 112.0],
-                [0.0, 532.2600075028636, 112.0],
-                [0.0, 0.0, 1.0],
-            ]
-        )  # hifihr assumption
-        self.hifihr_intrinsics = self.hifihr_intrinsics.unsqueeze(0).repeat(
+        if self.cfg.vis.where_to_render == "inpainted":
+            self.inpainter = instantiate(cfg.vis.inpaint, device=device, _recursive_=False)
+        self.hifihr_intrinsics = self.hand_dataset.hifihr_intrinsics.unsqueeze(0).repeat(
             self.cfg.batch_size, 1, 1
         )
 
@@ -188,6 +179,7 @@ class ReconstructHand(LightningModule):
             shuffle=False,
             pin_memory=True,
         )
+        assert self.cfg.batch_size == 1, "batch_size should be 1 for test"
         return self.dataloader
 
     def configure_optimizers(self):
@@ -198,6 +190,7 @@ class ReconstructHand(LightningModule):
         data = HandData(**batch)
         fidxs = data.fidxs
         images = data.images.cpu().numpy()
+        seg = data.seg.cpu().numpy()
         inpainted_images = data.inpainted_images
         hand_verts = data.hand_verts
         mano_verts_r = data.mano_verts_r
@@ -207,29 +200,32 @@ class ReconstructHand(LightningModule):
         xyz = data.xyz
 
         batch_size = hand_verts.shape[0]
-        image_size = images.shape[1]
-        if image_size != images.shape[2]:
-            logger.error("Only support square image")
-            raise ValueError
 
         # inpaint
-        if inpainted_images is None:
-            with console.status(
-                "Removing and inpainting the hand...", spinner="monkey"
-            ):
-                inpainted_images = self.inpainter(images, fidxs)
-                inapinted_dir = os.path.dirname(
-                    self.hand_dataset.cached.image.inpainted_path
-                )
-                os.makedirs(inapinted_dir, exist_ok=True)
-                for b in range(batch_size):
-                    inpainted_path = (
-                        self.hand_dataset.cached.image.inpainted_path % fidxs[b]
+        if self.cfg.vis.where_to_render == "raw":
+            image_size = images.shape[1]
+            if image_size != images.shape[2]:
+                logger.error("Only support square image")
+                raise ValueError
+        elif self.cfg.vis.where_to_render == "inpainted":
+            if inpainted_images is None:
+                with console.status(
+                    "Removing and inpainting the hand...", spinner="monkey"
+                ):
+                    inpainted_images = self.inpainter(images, fidxs)
+                    inapinted_dir = os.path.dirname(
+                        self.hand_dataset.cached.image.inpainted
                     )
-                    Image.fromarray(inpainted_images[b]).save(inpainted_path)
-                    logger.info(f"Saved {inpainted_path}")
-        else:
-            inpainted_images = inpainted_images.cpu().numpy()
+                    os.makedirs(inapinted_dir, exist_ok=True)
+                    for b in range(batch_size):
+                        inpainted_path = (
+                            self.hand_dataset.cached.image.inpainted % fidxs[b]
+                        )
+                        Image.fromarray(inpainted_images[b]).save(inpainted_path)
+                        logger.info(f"Saved {inpainted_path}")
+            else:
+                inpainted_images = inpainted_images.cpu().numpy()
+            image_size = inpainted_images.shape[1]
 
         # normalize to center
         hand_original_verts = hand_verts.clone()
@@ -269,24 +265,32 @@ class ReconstructHand(LightningModule):
 
         # Pytorch3D renderer
         self.hifihr_intrinsics = self.hifihr_intrinsics.to(self.device)
-        renderer = Renderer(self.device, image_size, self.hifihr_intrinsics)
+        if image_size != self.hand_dataset.hifihr_image_size:
+            ratio = image_size / self.hand_dataset.hifihr_image_size
+            hifihr_intrinsics = self.hifihr_intrinsics.clone()
+            hifihr_intrinsics[:, :2] *= ratio
+        else:
+            hifihr_intrinsics = self.hifihr_intrinsics
+        renderer = Renderer(self.device, image_size, hifihr_intrinsics)
 
         # give data
         handresult = dict(
             batch_size=hand_verts.shape[0],
             fidxs=fidxs,
             dataset=self.hand_dataset,
-            verts_n=hand_verts_n,  # mano
-            faces=hand_faces,
-            mano_verts_r=mano_verts_r,
-            mano_joints_r=mano_joints_r,
-            aux=hand_aux,
-            max_norm=hand_max_norm,
-            center=hand_center,
             original_verts=hand_original_verts,  # nimble
             original_faces=hand_original_faces,
+            verts_n=hand_verts_n,  # mano
+            faces=hand_faces,
+            aux=hand_aux,
+            mano_verts_r=mano_verts_r,
+            mano_joints_r=mano_joints_r,
+            center=hand_center,
+            max_norm=hand_max_norm,
             renderer=renderer,
+            images=images,
             inpainted_images=inpainted_images,
+            seg=seg,
         )
         HandResult = namedtuple("HandResult", list(handresult.keys()))
         handresult = HandResult(**handresult)

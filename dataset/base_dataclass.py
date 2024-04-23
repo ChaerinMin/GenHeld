@@ -70,6 +70,7 @@ class PaddedTensor:
 class HandData:
     fidxs: int
     images: Tensor
+    seg: Tensor
     hand_verts: Tensor
     hand_faces: NamedTuple
     mano_verts_r: Tensor

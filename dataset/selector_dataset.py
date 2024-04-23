@@ -70,7 +70,7 @@ class DexYCBDataset(SelectorDataset):
 
         # save object names
         object_paths = sorted(glob.glob(os.path.join(self.opt.path, "models", "*")))
-        object_names_path = os.path.join(cfg.selector_ckpt_dir, "selector_objects.yaml")
+        object_names_path = os.path.join(cfg.selector.ckpt_dir, "selector_objects.yaml")
         object_names = []
         for cate in self.categories:
             obj_names = []
@@ -350,7 +350,7 @@ class DexYCBDataset(SelectorDataset):
         vis = cateidx_to_shape.numpy()
         vis = o3d.utility.Vector3dVector(vis)
         vis = o3d.geometry.PointCloud(vis)
-        o3d.io.write_point_cloud(os.path.join(cfg.selector_ckpt_dir, "selector_supercate2shape.ply"), vis)
+        o3d.io.write_point_cloud(os.path.join(cfg.selector.ckpt_dir, "selector_supercate2shape.ply"), vis)
 
         # median & save cate2shape
         cate2shape = []
@@ -358,7 +358,7 @@ class DexYCBDataset(SelectorDataset):
             cate2shape.append([k] + np.median(np.stack(v), axis=0).tolist())
         cate2shape = sorted(cate2shape, key=lambda x: x[0])
         cate2shape_path = os.path.join(
-            cfg.selector_ckpt_dir, "selector_cate2shape.yaml"
+            cfg.selector.ckpt_dir, "selector_cate2shape.yaml"
         )
         with open(cate2shape_path, "w") as f:
             yaml.safe_dump(cate2shape, f)
@@ -367,7 +367,7 @@ class DexYCBDataset(SelectorDataset):
         vis = np.array([v[1:] for v in cate2shape])
         vis = o3d.utility.Vector3dVector(vis)
         vis = o3d.geometry.PointCloud(vis)
-        o3d.io.write_point_cloud(os.path.join(cfg.selector_ckpt_dir, "selector_cate2shape.ply"), vis)
+        o3d.io.write_point_cloud(os.path.join(cfg.selector.ckpt_dir, "selector_cate2shape.ply"), vis)
 
         return
 

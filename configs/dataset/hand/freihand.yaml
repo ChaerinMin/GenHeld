@@ -4,7 +4,9 @@ opt:
   refresh: True
 
   image: 
-    path: "data/FreiHAND/evaluation/rgb/%08d.jpg"
+    path: "data/FreiHAND/evaluation/rgb_SR/%08d.png"
+    mediapipe: "assets/mediapipe/hand_landmarker.task"
+    sam: "assets/sam/sam_vit_h_4b8939.pth"
 
   hand: 
     hifihr_pretrained: "assets/hifihr/full_freihand.t7"
@@ -19,7 +21,9 @@ opt:
   
   cached:
     image:
-      inpainted_path: "data/FreiHAND/evaluation/inpainted/%08d.jpg"
+      seg: "data/FreiHAND/evaluation/sam_seg/%08d.png"
+      seg_vis: "data/FreiHAND/evaluation/sam_seg/vis_%08d.png"
+      inpainted: "data/FreiHAND/evaluation/inpainted/%08d.jpg"
     hand:
       path: "data/FreiHAND/evaluation/hifihr_obj/%07d.obj"
       xyz: "data/FreiHAND/evaluation/hifihr_obj/%07d_pred_xyz.npy"

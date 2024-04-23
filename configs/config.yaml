@@ -1,6 +1,8 @@
+# Don't touch the ???
+
 defaults:
   - dataset/hand@hand_dataset: freihand
-  - dataset/object@object_dataset: ycb
+  - dataset/object@object_dataset: objaverse
   - dataset/selector@selector_dataset: dexycb
 
   - module/reconstruct_hand@reconstruct_hand: hifihr
@@ -13,19 +15,21 @@ defaults:
 
 
 debug: False
-object_selector: 'train'  # 'train' or 'inference'
-is_preoptimized: False
-
+batch_size: 1
 devices: [0]
-batch_size: 2
 
-resume_dir: ''
-selector_ckpt: ''
+selector: 
+  mode: 'inference'  # 'train' or 'inference'
+  ckpt_dir: ???
+  ckpt_path: '/dev/hdd/GenHeld/outputs/2024-04-02/15-10-45/selector_checkpoints/epoch=341-step=1026.ckpt'
 
-# Don't touch the ???
+optimizer:
+  mode: 'optimize'  # 'optimize' or 'evalute'
+  resume_dir: '' # '/dev/hdd/GenHeld/outputs/objaverse4000/'
+
+
 output_dir: ??? 
 results_dir: ???
-selector_ckpt_dir: ???
 ckpt_dir: ???   
 
 hydra:
@@ -34,4 +38,4 @@ hydra:
     
   job_logging:
     root:
-      level: INFO
+      level: DEBUG

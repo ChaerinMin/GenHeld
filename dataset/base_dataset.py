@@ -1,37 +1,44 @@
+import glob
 import logging
 import os
 import pickle
 import random
-import glob
-import subprocess
 
 import cv2
+import mediapipe
 import numpy as np
 import open3d as o3d
+import pymeshlab as ml
 import torch
-from pytorch3d.io import load_obj
-from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
-from torch.utils.data import Dataset
+from iopath.common.file_io import PathManager
 from matplotlib import pyplot as plt
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 from pytorch3d.io import load_obj, load_ply, save_obj
-from torchvision import transforms
 from pytorch3d.io.experimental_gltf_io import load_meshes
 from pytorch3d.structures import join_meshes_as_scene
-from iopath.common.file_io import PathManager
-import pymeshlab as ml
+from pytorch3d.transforms import Transform3d, axis_angle_to_matrix
+from rich.console import Console
+from segment_anything import SamPredictor, sam_model_registry
+from torch.utils.data import Dataset
+from torchvision import transforms
+from torchvision.transforms import Resize
 
 from dataset import _P3DFaces
-from visualization import bones
 from submodules.HiFiHR.models_res_nimble import Model as HiFiHRModel
 from submodules.HiFiHR.utils.manopth.manolayer import ManoLayer
 from submodules.HiFiHR.utils.NIMBLE_model.utils import save_hifihr_mesh
 from submodules.HiFiHR.utils.train_utils import load_hifihr
 from submodules.NIMBLE_model.utils import vertices2landmarks
+from utils.joints import mediapipe_to_kp
+from visualization import bones
+from visualization.keypoints import vis_keypoints
 
 NIMBLE_N_VERTS = 5990
 ROOT_JOINT_IDX = 9
 # NIMBLE_ROOT_ID = 11
 logger = logging.getLogger(__name__)
+console = Console()
 
 
 class HandDataset(Dataset):
@@ -97,6 +104,24 @@ class HandDataset(Dataset):
             self.mano_num_a_faces,
         ) = self.nimblearm(self.device)
 
+        # mediapipe
+        base_options = mp_python.BaseOptions(model_asset_path=opt.image.mediapipe)
+        options = mp_vision.HandLandmarkerOptions(
+            base_options=base_options,
+            num_hands=1,
+            min_hand_detection_confidence=0.16,
+            min_hand_presence_confidence=0.16,
+        )
+        self.hand_landmarker = mp_vision.HandLandmarker.create_from_options(
+            options=options
+        )
+
+        # SAM
+        with console.status("Setting up the SAM...", spinner="monkey"):
+            sam = sam_model_registry["vit_h"](checkpoint=opt.image.sam)
+            sam = sam.to(device)
+            self.sam_segmenter = SamPredictor(sam)
+
         return
 
     def __len__(self):
@@ -108,18 +133,67 @@ class HandDataset(Dataset):
         joint_color = plt.cm.gist_rainbow(np.linspace(0, 1, 21))[:, :-1]
 
         # image
-        image = torch.from_numpy(
-            cv2.cvtColor(cv2.imread(self.image.path % fidx), cv2.COLOR_BGR2RGB)
-        )
-        if os.path.exists(self.cached.image.inpainted_path % fidx):
-            inpainted_image = torch.from_numpy(
-                cv2.cvtColor(
-                    cv2.imread(self.cached.image.inpainted_path % fidx),
-                    cv2.COLOR_BGR2RGB,
+        image = cv2.cvtColor(cv2.imread(self.image.path % fidx), cv2.COLOR_BGR2RGB)
+        inpainted_image = None
+        if self.cfg.vis.where_to_render == "raw":
+            pass
+        elif self.cfg.vis.where_to_render == "inpainted":
+            if os.path.exists(self.cached.image.inpainted % fidx):
+                inpainted_image = torch.from_numpy(
+                    cv2.cvtColor(
+                        cv2.imread(self.cached.image.inpainted % fidx),
+                        cv2.COLOR_BGR2RGB,
+                    )
                 )
-            )
         else:
-            inpainted_image = None
+            logger.error(f"Invalid where_to_render {self.cfg.vis.where_to_render}")
+            raise ValueError
+
+        # seg
+        if not os.path.exists(self.cached.image.seg % fidx) or self.opt.refresh:
+            seg_dir = os.path.dirname(self.cached.image.seg % fidx)
+            if not os.path.exists(seg_dir):
+                os.makedirs(seg_dir)
+            # hand keypoints
+            kp = self.hand_landmarker.detect(
+                mediapipe.Image(image_format=mediapipe.ImageFormat.SRGB, data=image)
+            )
+            kp = mediapipe_to_kp(kp, image.shape[:2])
+            # SAM
+            kp_box = np.stack([kp.min(0), kp.max(0)])
+            kp_box_center = (kp_box[0] + kp_box[1]) / 2
+            kp_box = (kp_box - kp_box_center[None, :]) * 1.3 + kp_box_center[None, :]
+            kp_box = kp_box.astype(np.int32).reshape(-1)
+            kp_label = np.ones(kp.shape[0])
+            self.sam_segmenter.set_image(image)
+            seg, *_ = self.sam_segmenter.predict(
+                point_coords=kp,
+                point_labels=kp_label,
+                box=kp_box,
+                multimask_output=False)
+            seg = seg.squeeze(0)
+            vis_seg = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            vis_seg[seg] = vis_seg[seg] * 0.7 + np.array([0, 0, 255]) * 0.3
+            seg = seg.astype(np.uint8) * 255
+            # save
+            cv2.imwrite(self.cached.image.seg % fidx, seg)
+            logger.info(f"Saved {self.cached.image.seg % fidx}")        
+            # visualization
+            cv2.imwrite(self.cached.image.seg_vis % fidx, vis_seg)
+            vis_kp = vis_keypoints(image, kp)
+            vis_box = np.copy(image)
+            vis_box = cv2.rectangle(vis_box, kp_box[:2], kp_box[2:], (0, 0, 255), 2)
+            vis_kp_path = self.cached.image.seg_vis.replace(".", "_kp.") % fidx
+            vis_box_path = self.cached.image.seg_vis.replace(".", "_box.") % fidx
+            cv2.imwrite(vis_kp_path, vis_kp[:,:, ::-1])
+            cv2.imwrite(vis_box_path, vis_box[:,:,::-1])
+        seg = cv2.imread(self.cached.image.seg % fidx, cv2.IMREAD_GRAYSCALE)
+        seg = torch.from_numpy(seg)
+        if seg.shape[0] != image.shape[0]:
+            logger.warning("Resizing seg to match image size")
+            seg = Resize(image.shape[0])(seg[None, None, ...])[0][0]
+        image = torch.from_numpy(image)
+
 
         # image -> hand mesh
         hand_path = self.cached.hand.path % fidx
@@ -133,12 +207,12 @@ class HandDataset(Dataset):
             or not os.path.exists(xyz_save_path)
             or not os.path.exists(mano_r_path)
             or not os.path.exists(mano_joint_r_path)
-            or self.opt.refresh
+            # or self.opt.refresh
         ):
-            image_hifihr = (
-                image.permute(2, 0, 1).unsqueeze(0).to(self.device).to(torch.float32)
-                / 255.0
-            )
+            image_hifihr = image.permute(2, 0, 1).unsqueeze(0).to(self.device)
+            if image_hifihr.shape[2] != self.hifihr_image_size:
+                image_hifihr = Resize(self.hifihr_image_size)(image_hifihr)
+            image_hifihr = image_hifihr.to(torch.float32) / 255.0
             with torch.no_grad():
                 output = self.hifihr_model(
                     "FreiHand", mode_train=False, images=image_hifihr
@@ -194,6 +268,7 @@ class HandDataset(Dataset):
         return_dict = dict(
             fidxs=fidx,
             images=image,
+            seg=seg,
             hand_verts=hand_verts,
             hand_faces=hand_faces,
             mano_verts_r=mano_verts_r,
@@ -418,7 +493,9 @@ class ObjectDataset(Dataset):
                 if self.object.texture_size is not None:
                     texture_img = cv2.imread(texture_path)
                     if texture_img is None:
-                        texture_path = os.path.splitext(self.object.path % fidx)[0] + ".jpg"
+                        texture_path = (
+                            os.path.splitext(self.object.path % fidx)[0] + ".jpg"
+                        )
                         texture_img = cv2.imread(texture_path)
                     if texture_img is None:
                         logger.error(f"Texture image {texture_path} not found")

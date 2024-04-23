@@ -1,8 +1,10 @@
 import glob
-import json
+import torch
 import logging
 import os
 import re
+import cv2 
+import numpy as np
 
 from .base_dataset import HandDataset
 
@@ -10,6 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class FreiHANDDataset(HandDataset):
+    hifihr_intrinsics = torch.tensor(
+            [
+                [531.9495243872041, 0.0, 112.0],
+                [0.0, 532.2600075028636, 112.0],
+                [0.0, 0.0, 1.0],
+            ]
+     )   # hifihr assumption
+    hifihr_image_size = 224
+
     def __init__(self, opt, cfg, device):
         super().__init__(opt, cfg, device)
 
@@ -48,3 +59,11 @@ class FreiHANDDataset(HandDataset):
         # True / False
         self.nimble = opt.hand.nimble
         self.arm = opt.hand.arm
+
+    def __getitem__(self, idx):
+        return_dict = super().__getitem__(idx)
+        seg = return_dict["seg"].numpy()
+        # kernel = np.ones((7,7), np.uint8)
+        # seg = cv2.erode(seg, kernel, iterations=1)
+        return_dict["seg"] = torch.tensor(seg)
+        return return_dict

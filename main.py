@@ -43,8 +43,8 @@ def main(cfg):
     logger.warning(f"Number of devices: {torch.cuda.device_count()}")
 
     # paths
-    if cfg.resume_dir:
-        cfg.output_dir = cfg.resume_dir
+    if cfg.optimizer.resume_dir:
+        cfg.output_dir = cfg.optimizer.resume_dir
         cfg.results_dir = os.path.join(cfg.output_dir, "results")
         if not os.path.exists(cfg.results_dir):
             logger.error(f"Resume directory {cfg.results_dir} does not exist!")
@@ -60,7 +60,7 @@ def main(cfg):
         os.makedirs(cfg.ckpt_dir)
 
     # compare config
-    if cfg.resume_dir:
+    if cfg.optimizer.resume_dir:
         old_cfg_path = os.path.join(cfg.output_dir, ".hydra", "config.yaml")
         old_cfg = OmegaConf.load(old_cfg_path)
         logger.info(f"Comparing with {old_cfg_path}")
@@ -75,14 +75,14 @@ def main(cfg):
         device = "cpu"
         logger.warning("CPU only, this will be slow!")
 
-    if cfg.object_selector == "train":
-        cfg.selector_ckpt_dir = os.path.join(cfg.output_dir, "selector_checkpoints")
-        if not os.path.exists(cfg.selector_ckpt_dir):
-            os.makedirs(cfg.selector_ckpt_dir)
+    if cfg.selector.mode == "train":
+        cfg.selector.ckpt_dir = os.path.join(cfg.output_dir, "selector_checkpoints")
+        if not os.path.exists(cfg.selector.ckpt_dir):
+            os.makedirs(cfg.selector.ckpt_dir)
         object_selection = instantiate(cfg.select_object, cfg=cfg, device=device , _recursive_=False)
         callbacks = [
             ModelCheckpoint(
-                dirpath=cfg.selector_ckpt_dir, monitor="val/category_top1", mode="max", verbose=cfg.debug
+                dirpath=cfg.selector.ckpt_dir, monitor="val/category_top1", mode="max", verbose=cfg.debug
             ),
             LearningRateMonitor(logging_interval="step")
         ]
@@ -102,17 +102,15 @@ def main(cfg):
             logger=loggers,
             enable_model_summary=True,
             default_root_dir=cfg.output_dir,
-            # val_check_interval=1.0,  # one epoch
             check_val_every_n_epoch=cfg.select_object.opt.val.every_n_epoch,
         )
-        if cfg.selector_ckpt:  # resume training
-            logger.warning(f"Resume from {cfg.selector_ckpt}")
-            selector.fit(object_selection, ckpt_path=cfg.selector_ckpt)
+        if cfg.selector.ckpt_path:  # resume training
+            logger.warning(f"Resume from {cfg.selector.ckpt_path}")
+            selector.fit(object_selection, ckpt_path=cfg.selector.ckpt_path)
         else:
             selector.fit(object_selection)
-    elif cfg.object_selector == "inference":
-        cfg.selector_ckpt_dir = os.path.dirname(cfg.selector_ckpt)
-        # main
+    elif cfg.selector.mode == "inference":
+        cfg.selector.ckpt_dir = os.path.dirname(cfg.selector.ckpt_path)
         reconstruction = ReconstructHand(cfg, accelerator, device)
         reconstructor = pl.Trainer(
             devices=len(cfg.devices),
@@ -122,13 +120,15 @@ def main(cfg):
             enable_model_summary=False,
             default_root_dir=cfg.output_dir,
         )
-        if not cfg.is_preoptimized:
+        if cfg.optimizer.mode == 'optimize':
             logger.info(f"Max global steps for hands: {reconstructor.max_steps}")
             logger.info(f"Max epochs for hands: {reconstructor.max_epochs}")
             reconstructor.fit(reconstruction)
-
-        # evaluate
-        reconstructor.test(reconstruction)
+        elif cfg.optimizer.mode == 'evaluate':
+            reconstructor.test(reconstruction)
+        else:
+            logger.error(f"optimizer.mode should be either optimize or evaluate, got {cfg.optimizer.mode}")
+            raise ValueError
     else:
         logger.error(
             f"object_selector should be either train or inference, got {cfg.object_selector}"
