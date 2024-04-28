@@ -18,6 +18,7 @@ from submodules.HiFiHR.utils.NIMBLE_model.myNIMBLELayer import mano_v2j_reg
 from module.select_object import SelectObject
 from utils import get_NN, get_bbox, get_hand_size
 from visualization import bbox_lines, bones
+from visualization.joints import vis_joints
 
 from .base_dataset import SelectorDataset
 
@@ -182,17 +183,8 @@ class DexYCBDataset(SelectorDataset):
                     np.save(hand_joints_r_path, hand_joints_r.numpy())
                     logger.info(f"Saved {hand_mesh_r_path}")
                     logger.info(f"Saved {hand_joints_r_path}")
-                    # visualize joints lines
-                    kp = o3d.utility.Vector3dVector(hand_joints_r)
-                    lines = o3d.utility.Vector2iVector(bones)
-                    line_set = o3d.geometry.LineSet(kp, lines)
-                    o3d.io.write_line_set(bone_vis_path, line_set)
-                    logger.info(f"Saved {bone_vis_path}")
-                    # visualize joints colors
-                    keypoints = o3d.geometry.PointCloud(kp)
-                    keypoints.colors = o3d.utility.Vector3dVector(joint_color)
-                    o3d.io.write_point_cloud(joint_vis_path, keypoints)
-                    logger.info(f"Saved {joint_vis_path}")
+                    # visualize joints
+                    vis_joints(hand_joints_r, bone_vis_path, joint_vis_path)
                 hand_verts_r = Pointclouds(points=[hand_verts_r])
                 hand_verts_r.estimate_normals(assign_to_self=True)
                 self.hand_verts_r.append(hand_verts_r)
@@ -249,16 +241,7 @@ class DexYCBDataset(SelectorDataset):
                         verts_r, 0, torch.sort(verts_r[:, 2])[1]
                     )
                     # oriented bbox
-                    # verts_o3d = o3d.utility.Vector3dVector(verts_r.numpy())
-                    # bbox = o3d.geometry.OrientedBoundingBox.create_from_points(
-                    #     verts_o3d
-                    # )
-                    # bbox = bbox.get_minimal_oriented_bounding_box()
-                    # bbox_corners = bbox.get_box_points()
-                    # bbox_size = bbox.extent
-                    # bbox_size = np.sort(bbox_size)[::-1]
                     bbox_size, bbox_corners = get_bbox(verts_r)
-                    # hand_size = torch.norm(hand_joints_r[17] - hand_joints_r[0]).numpy()
                     hand_size = get_hand_size(hand_joints_r.unsqueeze(0))[0].numpy()
                     # save
                     object_pc_r = Pointclouds(points=[verts_r])
@@ -285,16 +268,6 @@ class DexYCBDataset(SelectorDataset):
                 self.object_pcs_r.append(object_pc_r)
                 assert bbox_size[2] > 1e-8, "Invalid bbox size."
                 shape_code = SelectObject.create_shape_code(torch.tensor(bbox_size).unsqueeze(0), torch.tensor(hand_size).unsqueeze(0))
-                # shape_code = torch.tensor(
-                #     [
-                #         # hand_size / bbox_size[2],
-                #         # bbox_size[1] / bbox_size[2],
-                #         # bbox_size[0] / bbox_size[1],
-                #         bbox_size[2] / hand_size,
-                #         bbox_size[1] / hand_size,
-                #         bbox_size[0] / hand_size,
-                #     ]
-                # )
                 if cate_name in cate_to_shape:
                     cate_to_shape[cate_name].append(shape_code)
                 else:

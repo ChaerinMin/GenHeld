@@ -28,100 +28,6 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
-class DiscriminateHand(Sampler):
-    def __init__(self, opt, cfg, dataset):
-        self.opt = opt
-        self.cfg = cfg
-        self.dataset = dataset
-
-        # convex hull visualize path
-        self.convex_hull_dir = os.path.join(self.cfg.output_dir, "hand_discrimination")
-        os.makedirs(self.convex_hull_dir, exist_ok=True)
-
-        # accepted hands path
-        self.accepted_hands_path = os.path.join(
-            self.cfg.output_dir, "accepted_hands.npy"
-        )
-        if not os.path.exists(self.accepted_hands_path):
-            accepted_hands = np.zeros((len(self.dataset), 2), dtype=np.int32)
-            accepted_hands[:, 0] = np.array(self.dataset.fidxs)
-            np.save(self.accepted_hands_path, accepted_hands)
-            logger.debug(f"Created {self.accepted_hands_path}")
-        else:
-            logger.debug(f"{self.accepted_hands_path} exists. Will be reused.")
-
-        return
-
-    @staticmethod
-    def objective_function(center, convex_hull):
-        sdf = trimesh.proximity.signed_distance(
-            convex_hull, [center]
-        )  # pip install rtree needed
-        sdf *= -1  # make outside positive
-        sdf += convex_hull.scale  # avoid negative loss
-        return sdf
-
-    def __iter__(self):
-        for i, data in enumerate(self.dataset):
-            # convel hull
-            mesh = trimesh.Trimesh(
-                vertices=data["hand_verts"], faces=data["hand_faces"].verts_idx
-            )
-            convex_hull = mesh.convex_hull
-
-            # optimize
-            initial_center = convex_hull.centroid
-            result = minimize(
-                DiscriminateHand.objective_function,
-                initial_center,
-                args=(convex_hull,),
-                method=self.opt.scipy_method,
-                options={"maxiter": self.opt.max_iter},
-            )
-            inscripted_radius = result.fun
-            inscripted_radius -= convex_hull.scale
-            inscripted_radius *= -1
-
-            # save
-            convex_hull_path = os.path.join(
-                self.convex_hull_dir, f"{data['fidxs']:08d}_convexhull.obj"
-            )
-            convex_hull.export(convex_hull_path)
-            sphere_path = os.path.join(
-                self.convex_hull_dir, f"{data['fidxs']:08d}_sphere.obj"
-            )
-            inscripted_center = result.x
-            sphere = trimesh.creation.icosphere(
-                subdivisions=3, radius=inscripted_radius
-            )
-            sphere.apply_translation(inscripted_center)
-            sphere.export(sphere_path)
-
-            # accept or reject
-            inscripted_ratio = sphere.volume / mesh.volume
-            success = inscripted_ratio >= self.opt.accept_thresh
-            if success:
-                logger.debug(
-                    f"Accepted {data['fidxs']}. Radius: {inscripted_radius:.3f}"
-                )
-                accepted_hands = np.load(self.accepted_hands_path)
-                hand_fidxs = data["fidxs"]
-                assert accepted_hands[i, 0] == hand_fidxs, f"accepted hands: {accepted_hands[i, 0]}, hand_fidxs: {hand_fidxs}"
-                accepted_hands[i, 1] = 1
-                np.save(self.accepted_hands_path, accepted_hands)
-                logger.debug(f"Updated {self.accepted_hands_path}")
-                yield i
-            else:
-                logger.info(
-                    f"Rejected {data['fidxs']}. Radius: {inscripted_radius:.3f}" 
-                )
-
-        return
-
-    def __len__(self):
-        return len(self.dataset)
-
-
 class ReconstructHand(LightningModule):
     def __init__(self, cfg, accelerator, device):
         super().__init__()
@@ -132,7 +38,7 @@ class ReconstructHand(LightningModule):
             cfg.hand_dataset, cfg=cfg, device=device, _recursive_=False
         )
 
-        if self.cfg.vis.where_to_render == "inpainted":
+        if self.cfg.vis.render.where == "inpainted":
             self.inpainter = instantiate(cfg.vis.inpaint, device=device, _recursive_=False)
         self.hifihr_intrinsics = self.hand_dataset.hifihr_intrinsics.unsqueeze(0).repeat(
             self.cfg.batch_size, 1, 1
@@ -202,12 +108,12 @@ class ReconstructHand(LightningModule):
         batch_size = hand_verts.shape[0]
 
         # inpaint
-        if self.cfg.vis.where_to_render == "raw":
+        if self.cfg.vis.render.where == "raw":
             image_size = images.shape[1]
             if image_size != images.shape[2]:
                 logger.error("Only support square image")
                 raise ValueError
-        elif self.cfg.vis.where_to_render == "inpainted":
+        elif self.cfg.vis.render.where == "inpainted":
             if inpainted_images is None:
                 with console.status(
                     "Removing and inpainting the hand...", spinner="monkey"
@@ -271,7 +177,7 @@ class ReconstructHand(LightningModule):
             hifihr_intrinsics[:, :2] *= ratio
         else:
             hifihr_intrinsics = self.hifihr_intrinsics
-        renderer = Renderer(self.device, image_size, hifihr_intrinsics)
+        renderer = Renderer(self.device, image_size, hifihr_intrinsics, self.cfg.vis.video)
 
         # give data
         handresult = dict(
@@ -300,49 +206,58 @@ class ReconstructHand(LightningModule):
         handresult = self(batch)
 
         # optimize
-        tt_optimization = TestTimeOptimize(
-            self.cfg, self.device, self.accelerator, handresult
-        )
-        print("optimizer initialized")
-        callbacks = [LearningRateMonitor(logging_interval="step")]
-        loggers = [
-            WandbLogger(
-                name=f"hand_{handresult.fidxs[0]}",
-                project="GenHeld_TTA",
-                offline=self.cfg.debug,
-                save_dir=self.cfg.output_dir,
+        object_dataset = None
+        for i in range(self.cfg.tta.n_obj):
+            tt_optimization = TestTimeOptimize(
+                self.cfg, self.device, self.accelerator, handresult, object_dataset
             )
-        ]
-        trainer = pl.Trainer(
-            devices=len(self.cfg.devices),
-            accelerator=self.accelerator,
-            callbacks=callbacks,
-            logger=loggers,
-            max_epochs=1,
-            enable_checkpointing=False,
-            enable_model_summary=False,
-            default_root_dir=self.cfg.output_dir,
-        )
-        logger.info(f"Max global steps for object optimization: {trainer.max_steps}")
-        logger.info(f"Max epochs for object optimization: {trainer.max_epochs}")
-        trainer.fit(tt_optimization)
+            print("optimizer initialized")
+            callbacks = [LearningRateMonitor(logging_interval="step")]
+            loggers = [
+                WandbLogger(
+                    name=f"hand_{handresult.fidxs[0]}",
+                    project="GenHeld_TTA",
+                    offline=self.cfg.debug,
+                    save_dir=self.cfg.output_dir,
+                )
+            ]
+            trainer = pl.Trainer(
+                devices=len(self.cfg.devices),
+                accelerator=self.accelerator,
+                callbacks=callbacks,
+                logger=loggers,
+                max_epochs=1,
+                enable_checkpointing=False,
+                enable_model_summary=False,
+                default_root_dir=self.cfg.output_dir,
+            )
+            logger.info(f"Max global steps for object optimization: {trainer.max_steps}")
+            logger.info(f"Max epochs for object optimization: {trainer.max_epochs}")
+            trainer.fit(tt_optimization)
+            object_dataset = tt_optimization.object_dataset
 
         return dict(loss=torch.abs(self.dummy) + 1e10)
 
     def test_step(self, batch, batch_idx):
         handresult = self(batch)
+        assert handresult.batch_size == 1, "batch_size should be 1 for test"
 
-        tt_optimization = TestTimeOptimize(
-            self.cfg, self.manual_device, self.accelerator, handresult
-        )
-        tester = pl.Trainer(
-            devices=self.cfg.devices[0:1],
-            accelerator=self.accelerator,
-            enable_checkpointing=False,
-            enable_model_summary=False,
-            default_root_dir=self.cfg.output_dir,
-        )
-        tester.test(tt_optimization)
+        test_cnt = 0
+        while True:
+            tt_optimization = TestTimeOptimize(
+                self.cfg, self.manual_device, self.accelerator, handresult, object_dataset=None, test_cnt=test_cnt
+            )
+            tester = pl.Trainer(
+                devices=self.cfg.devices[0:1],
+                accelerator=self.accelerator,
+                enable_checkpointing=False,
+                enable_model_summary=False,
+                default_root_dir=self.cfg.output_dir,
+            )
+            tester.test(tt_optimization)
+            test_cnt += 1
+            if test_cnt >= tt_optimization.test_n:
+                break
 
         # metrics logging
         self.metric_results.append(tt_optimization.metric_results)
@@ -385,3 +300,97 @@ class ReconstructHand(LightningModule):
         logger.info(f"Saved metrics to {save_excel_path}")
 
         return
+    
+
+class DiscriminateHand(Sampler):
+    def __init__(self, opt, cfg, dataset):
+        self.opt = opt
+        self.cfg = cfg
+        self.dataset = dataset
+
+        # convex hull visualize path
+        self.convex_hull_dir = os.path.join(self.cfg.output_dir, "hand_discrimination")
+        os.makedirs(self.convex_hull_dir, exist_ok=True)
+
+        # accepted hands path
+        self.accepted_hands_path = os.path.join(
+            self.cfg.output_dir, "accepted_hands.npy"
+        )
+        if not os.path.exists(self.accepted_hands_path):
+            accepted_hands = np.zeros((len(self.dataset), 2), dtype=np.int32)
+            accepted_hands[:, 0] = np.array(self.dataset.fidxs)
+            np.save(self.accepted_hands_path, accepted_hands)
+            logger.debug(f"Created {self.accepted_hands_path}")
+        else:
+            logger.debug(f"{self.accepted_hands_path} exists. Will be reused.")
+
+        return
+
+    @staticmethod
+    def objective_function(center, convex_hull):
+        sdf = trimesh.proximity.signed_distance(
+            convex_hull, [center]
+        )  # pip install rtree needed
+        sdf *= -1  # make outside positive
+        sdf += convex_hull.scale  # avoid negative loss
+        return sdf
+
+    def __iter__(self):
+        for i, data in enumerate(self.dataset):
+            # convel hull
+            mesh = trimesh.Trimesh(
+                vertices=data["hand_verts"], faces=data["hand_faces"].verts_idx
+            )
+            convex_hull = mesh.convex_hull
+
+            # inscripted sphere
+            initial_center = convex_hull.centroid
+            result = minimize(
+                DiscriminateHand.objective_function,
+                initial_center,
+                args=(convex_hull,),
+                method=self.opt.scipy_method,
+                options={"maxiter": self.opt.max_iter},
+            )
+            inscripted_radius = result.fun
+            inscripted_radius -= convex_hull.scale
+            inscripted_radius *= -1
+
+            # save
+            convex_hull_path = os.path.join(
+                self.convex_hull_dir, f"{data['fidxs']:08d}_convexhull.obj"
+            )
+            convex_hull.export(convex_hull_path)
+            sphere_path = os.path.join(
+                self.convex_hull_dir, f"{data['fidxs']:08d}_sphere.obj"
+            )
+            inscripted_center = result.x
+            sphere = trimesh.creation.icosphere(
+                subdivisions=3, radius=inscripted_radius
+            )
+            sphere.apply_translation(inscripted_center)
+            sphere.export(sphere_path)
+
+            # accept or reject
+            inscripted_ratio = sphere.volume / mesh.volume
+            success = inscripted_ratio >= self.opt.accept_thresh
+            if success:
+                logger.debug(
+                    f"Accepted {data['fidxs']}. Radius: {inscripted_radius:.3f}"
+                )
+                accepted_hands = np.load(self.accepted_hands_path)
+                hand_fidxs = data["fidxs"]
+                assert accepted_hands[i, 0] == hand_fidxs, f"accepted hands: {accepted_hands[i, 0]}, hand_fidxs: {hand_fidxs}"
+                accepted_hands[i, 1] = 1
+                np.save(self.accepted_hands_path, accepted_hands)
+                logger.debug(f"Updated {self.accepted_hands_path}")
+                yield i
+            else:
+                logger.info(
+                    f"Rejected {data['fidxs']}. Radius: {inscripted_radius:.3f}" 
+                )
+
+        return
+
+    def __len__(self):
+        return len(self.dataset)

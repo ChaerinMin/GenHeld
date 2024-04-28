@@ -1,7 +1,9 @@
 import cv2
 from matplotlib.colors import hsv_to_rgb
 import numpy as np
-from matplotlib import pyplot as plt
+import open3d as o3d
+import torch
+import matplotlib.pyplot as plt
 
 from visualization.lines import bones
 
@@ -46,3 +48,30 @@ def vis_keypoints(img: np.ndarray, kp, vis_lines=True) -> np.ndarray:
             )
 
     return output_canvas
+
+
+joint_color = plt.cm.gist_rainbow(np.linspace(0, 1, 21))[:, :-1]
+
+def vis_joints(joints, bone_path, joint_path):
+    if isinstance(joints, torch.Tensor):
+        joints = joints.cpu().numpy()
+    if '.' not in bone_path:
+        bone_path += '.ply'
+    if '.' not in joint_path:
+        joint_path += '.ply'
+    if joints.ndim == 3:
+        joints = joints[0]
+        print(f"Warning: joints shape is {joints.shape}, only visualizing first frame.")
+    if joints.shape[1] != 3:
+        raise ValueError(f"Invalid joints shape: {joints.shape}")
+
+    # joints lines
+    kp = o3d.utility.Vector3dVector(joints)
+    lines = o3d.utility.Vector2iVector(bones)
+    line_set = o3d.geometry.LineSet(kp, lines)
+    o3d.io.write_line_set(bone_path, line_set)
+    # joints colors
+    keypoints = o3d.geometry.PointCloud(kp)
+    keypoints.colors = o3d.utility.Vector3dVector(joint_color)
+    o3d.io.write_point_cloud(joint_path, keypoints)
+    return

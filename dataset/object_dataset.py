@@ -6,6 +6,7 @@ import os
 import re
 import random
 import shutil
+import copy 
 
 import objaverse
 from pytorch3d.io.experimental_gltf_io import load_meshes
@@ -17,8 +18,8 @@ logger = logging.getLogger(__name__)
 n_processes = multiprocessing.cpu_count()
 
 class YCBDataset(ObjectDataset):
-    def __init__(self, opt):
-        super().__init__(opt)
+    def __init__(self, opt, cfg):
+        super().__init__(opt, cfg)
 
         # fidxs
         self.fidxs = []
@@ -41,13 +42,13 @@ class YCBDataset(ObjectDataset):
     def __len__(self):
         return len(self.fidxs)
 
-    def get_idx(self, name, name_type=None):
+    def get_idx(self, name, name_type=None, batch_idx=None):
         return self.fidxs.index(name)
     
 
 class ObjaverseDataset(ObjectDataset):
-    def __init__(self, opt):
-        super().__init__(opt)
+    def __init__(self, opt, cfg):
+        super().__init__(opt, cfg)
         self.dir = os.path.dirname(self.object.path)
         objaverse.BASE_PATH = self.dir
         objaverse._VERSIONED_PATH = os.path.join(self.dir, "tmp")
@@ -57,13 +58,17 @@ class ObjaverseDataset(ObjectDataset):
             with open(self.name2uid_path, "w") as f:
                 f.write("{}")
                 logger.info(f"Created a new {self.name2uid_path}")
-            
+
+        # same hand, same category
+        self.prev_cate = None     
+        # same hand, no duplicate object
+        self.used = []
         return 
     
     def __len__(self):
         return 1  # always on the fly
     
-    def get_idx(self, name, name_type):
+    def get_idx(self, name, name_type, batch_idx):
         '''
         name_type: "trainset" (YCB) or "testset" (Objaverse)
         '''
@@ -121,7 +126,19 @@ class ObjaverseDataset(ObjectDataset):
 
             # download
             while True:
-                uid_choice = random.choice(uids)
+                uids_unused = copy.deepcopy(uids)
+                if len(self.used) == batch_idx:
+                    self.used.append(set())
+                elif len(self.used) < batch_idx:
+                    logger.error(f"Something wrong")
+                    raise ValueError
+                while True:
+                    uid_choice = random.choice(uids_unused)
+                    if uid_choice in self.used[batch_idx]:
+                        uids_unused.remove(uid_choice)
+                    else:
+                        break
+                self.used[batch_idx].add(uid_choice)
                 fidx = os.path.join(original_name, uid_choice[:5])
                 glb_path = os.path.splitext(self.object.path % fidx)[0] + ".glb"
                 if not os.path.exists(self.object.path % fidx) or self.object.refresh:

@@ -1,7 +1,15 @@
-where_to_render: "raw"  # choice: inpainted, raw
-what_to_render: "warped_object" # choice: hand_object, warped_object
+render:
+  where: "raw"  # choice: inpainted, raw
+  what: "warped_object" # choice: hand_object, warped_object
+  blend: "alpha_blending"  # choice: alpha_blending, poisson
 
-blend_type: "alpha_blending"  # choice: alpha_blending, poisson
+video:
+  image_size: 1024
+  degree: 15
+  distance: 0.8
+  elevation: 10
+  fov: 20
+  fps: 1
 
 inpaint:
   _target_: visualization.inpaint.Inpainter

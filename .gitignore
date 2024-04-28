@@ -16,3 +16,5 @@ data/YCB
 data/Objaverse
 data/DexYCB
 =
+assets/contact_mesh.ply
+assets/contact_points.ply

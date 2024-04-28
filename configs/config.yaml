@@ -7,7 +7,7 @@ defaults:
 
   - module/reconstruct_hand@reconstruct_hand: hifihr
   - module/select_object@select_object: shapecode
-  - module/testtime_optimize@testtime_optimize: obman
+  - module/testtime_optimize@tta: obman
   
   - vis: visualize
   - metric: metric
@@ -24,8 +24,8 @@ selector:
   ckpt_path: '/dev/hdd/GenHeld/outputs/2024-04-02/15-10-45/selector_checkpoints/epoch=341-step=1026.ckpt'
 
 optimizer:
-  mode: 'optimize'  # 'optimize' or 'evalute'
-  resume_dir: '' # '/dev/hdd/GenHeld/outputs/objaverse4000/'
+  mode: 'optimize'  # 'optimize' or 'evaluate'
+  resume_dir: '' # '/dev/hdd/GenHeld/outputs/2024-04-23/23-01-56' # '/dev/hdd/GenHeld/outputs/objaverse4000/'
 
 
 output_dir: ??? 

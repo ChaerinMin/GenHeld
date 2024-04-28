@@ -1,7 +1,7 @@
 discriminate_hand:
   _target_: module.reconstruct_hand.DiscriminateHand
   opt:
-    accept_thresh: 0.4
+    accept_thresh: 0.45
     scipy_method: 'SLSQP'
     max_iter: 100
   

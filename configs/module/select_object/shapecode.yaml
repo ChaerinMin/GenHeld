@@ -21,6 +21,9 @@ opt:
     every_n_epoch: 2
     vis_epoch: 50
 
+  inference:
+    use_raw: False
+
   loss: 
     kl_weight: 0.1
     kl_annealing_epoch: 50 

@@ -1,9 +1,15 @@
 import torch
 import pickle
 from functools import lru_cache
-from matplotlib import pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
+import os
+import json
+import logging
+import open3d as o3d
+from matplotlib import pyplot as plt
+
+
+logger = logging.getLogger(__name__)
 
 
 def cam_equal_aspect_3d(ax, verts, flip_x=False):
@@ -26,41 +32,44 @@ def cam_equal_aspect_3d(ax, verts, flip_x=False):
 
 
 @lru_cache(maxsize=128)
-def load_contacts(save_contact_paths="assets/contact_zones.pkl", display=False):
-    with open(save_contact_paths, "rb") as p_f:
-        contact_data = pickle.load(p_f)
-    hand_verts = contact_data["verts"]
+def load_contacts(contact_path, display=True):
+    # load
+    file_ext = os.path.splitext(contact_path)[-1]
+    if file_ext == ".pkl":
+        with open(contact_path, "rb") as p_f:
+            contact_data = pickle.load(p_f)
+    elif file_ext == ".json":
+        with open(contact_path, "r") as f:
+            contact_data = json.load(f)
+    else:
+        logger.error(f"Unknown contact file format: {file_ext}")
+        raise ValueError("Unknown contact file format")
+    contact_zones = contact_data["contact_zones"]
+
     if display:
-        colors = [
-            "#f04e36",
-            "#f36e27",
-            ["#f3d430"],
-            ["#1eb19d"],
-            ["#ed1683"],
-            ["#37bad6"],
-        ]
-        hand_faces = contact_data["faces"]
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection="3d")
-        # Display hand and object meshes
-        hand_mesh_disp = Poly3DCollection(hand_verts[hand_faces], alpha=0.1)
-        hand_mesh_disp.set_edgecolor("k")
-        hand_mesh_disp.set_facecolor([[1, 1, 1], [1, 0, 0]])
-        ax.add_collection3d(hand_mesh_disp)
-        idx_1, idx_2, idx_3 = 0, 1, 2
-        ax.axis("off")
-        # ax.scatter(hand_verts[:, idx_1], hand_verts[:, idx_2])
-        for zone_idx, zone_vert_idxs in contact_data["contact_zones"].items():
-            ax.scatter(
-                hand_verts[zone_vert_idxs, idx_1],
-                hand_verts[zone_vert_idxs, idx_2],
-                hand_verts[zone_vert_idxs, idx_3],
-                s=100,
-                c=colors[zone_idx],
-            )
-        cam_equal_aspect_3d(ax, hand_verts)
-        plt.show()
-    return hand_verts, contact_data["contact_zones"]
+        # mesh (no color)
+        verts_ori = np.array(contact_data["verts"])
+        faces = np.array(contact_data["faces"])
+        verts = o3d.utility.Vector3dVector(verts_ori)
+        faces = o3d.utility.Vector3iVector(faces)
+        mesh = o3d.geometry.TriangleMesh(verts, faces)
+        o3d.io.write_triangle_mesh("assets/contact_mesh.ply", mesh)
+        # contact pc (color)
+        colormap = plt.cm.gist_rainbow(np.linspace(0, 1, len(contact_zones)))[:, :-1]
+        contacts = []
+        colors = []
+        for i, zone in enumerate(contact_zones.values()):
+            contacts.extend(verts_ori[zone])
+            colors.extend([colormap[i]] * len(zone))
+        contacts = np.array(contacts)
+        colors = np.array(colors) * 255
+        contacts = o3d.utility.Vector3dVector(contacts)
+        colors = o3d.utility.Vector3dVector(colors)
+        pc = o3d.geometry.PointCloud(contacts)
+        pc.colors = colors
+        o3d.io.write_point_cloud("assets/contact_points.ply", pc)
+        
+    return contact_zones
 
 
 def batch_mesh_contains_points(

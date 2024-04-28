@@ -64,13 +64,22 @@ class SelectObject(LightningModule):
         return shape_code
     
     @staticmethod
-    def decompose_shape_code(shape_code, hand_size):
+    def interpret_shape_code(shape_code, hand_size):
         shape_code = shape_code.to(hand_size.device)
         bbox_lengths = torch.stack([
             shape_code[:, 2] * hand_size,
             shape_code[:, 1] * hand_size,
             shape_code[:, 0] * hand_size,
         ], dim=1)
+        return bbox_lengths
+    
+    @staticmethod
+    def refine_bbox_lengths(bbox_lengths, grip_size, hand_size):
+        padding = hand_size * 0.2
+        padding = padding.clamp(torch.zeros_like(grip_size), grip_size * 0.8)
+        ratio = (grip_size - padding) / bbox_lengths[:, 2]
+        ratio = ratio.clamp(0.5, 1.0)
+        bbox_lengths = bbox_lengths * ratio.unsqueeze(1)
         return bbox_lengths
     
     def train_dataloader(self):
@@ -353,9 +362,13 @@ class SelectObject(LightningModule):
                 shape_code_pred[:, : self.opt.dim_input],
                 shape_code_pred[:, self.opt.dim_input :],
             )
-            class_pred = torch.argmin(distances, dim=1).cpu()
+            class_pr = torch.argmin(distances, dim=1)
+            class_pred = class_pr.cpu()
             class_pred_name = catenames[class_pred.numpy()].tolist()
-            shape_code_out = shape_code_pred[:, : self.opt.dim_input]
+            if self.opt.inference.use_raw:
+                shape_code_out = shape_code_pred[:, : self.opt.dim_input]
+            else:
+                shape_code_out = torch.index_select(cateshapes, 0, class_pr)
         else:
             logger.error(f"Invalid selector output: {self.opt.output}")
             raise ValueError("Invalid selector output")

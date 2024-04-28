@@ -32,7 +32,7 @@ from submodules.HiFiHR.utils.train_utils import load_hifihr
 from submodules.NIMBLE_model.utils import vertices2landmarks
 from utils.joints import mediapipe_to_kp
 from visualization import bones
-from visualization.keypoints import vis_keypoints
+from visualization.joints import vis_keypoints
 
 NIMBLE_N_VERTS = 5990
 ROOT_JOINT_IDX = 9
@@ -135,9 +135,9 @@ class HandDataset(Dataset):
         # image
         image = cv2.cvtColor(cv2.imread(self.image.path % fidx), cv2.COLOR_BGR2RGB)
         inpainted_image = None
-        if self.cfg.vis.where_to_render == "raw":
+        if self.cfg.vis.render.where == "raw":
             pass
-        elif self.cfg.vis.where_to_render == "inpainted":
+        elif self.cfg.vis.render.where == "inpainted":
             if os.path.exists(self.cached.image.inpainted % fidx):
                 inpainted_image = torch.from_numpy(
                     cv2.cvtColor(
@@ -146,7 +146,7 @@ class HandDataset(Dataset):
                     )
                 )
         else:
-            logger.error(f"Invalid where_to_render {self.cfg.vis.where_to_render}")
+            logger.error(f"Invalid render.where {self.cfg.vis.render.where}")
             raise ValueError
 
         # seg
@@ -476,7 +476,8 @@ class HandDataset(Dataset):
 
 
 class ObjectDataset(Dataset):
-    def __init__(self, opt) -> None:
+    def __init__(self, opt, cfg) -> None:
+        self.cfg = cfg
         self.object = opt
         return
 

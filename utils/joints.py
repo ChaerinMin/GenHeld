@@ -10,6 +10,14 @@ def get_hand_size(mano_joints):
     hand_size = torch.norm(mano_joints[:, 17] - mano_joints[:, 0], dim=1)
     return hand_size
 
+def get_grip_size(mano_joints):
+    '''
+    mano_joints: torch.Tensor (B, 21, 3)
+    Return: torch.Tensor (B, )
+    '''
+    grip_size = torch.norm(mano_joints[:, 20] - mano_joints[:, 4], dim=1)
+    return grip_size
+
 def mediapipe_to_kp(kp_mediapipe, img_shape):
     H, W = img_shape
     keypoints = np.zeros((21, 2))

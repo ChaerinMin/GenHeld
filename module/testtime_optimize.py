@@ -25,7 +25,8 @@ from dataset.base_dataset import SelectorTestDataset
 from loss import ContactLoss
 from metric import penetration_volume, penetration_vox
 from module.select_object import SelectObject
-from utils import batch_normalize_mesh, get_hand_size, merge_ho, scale_to_bbox
+from utils import batch_normalize_mesh, merge_ho, scale_by_bbox
+from utils.joints import get_grip_size, get_hand_size
 from visualization import blend_images, warp_object, warp_occ
 
 mpl.rcParams["figure.dpi"] = 80
@@ -45,15 +46,19 @@ def plot_pointcloud(points, title=""):
 
 
 class TestTimeOptimize(LightningModule):
-    def __init__(self, cfg, device, accelerator, handresult):
+    def __init__(self, cfg, device, accelerator, handresult, object_dataset=None, test_cnt=None):
         super().__init__()
         self.cfg = cfg
         self.device_manual = device
         self.accelerator = accelerator
-        self.opt = cfg.testtime_optimize
+        self.opt = cfg.tta
         self.handresult = handresult
         self.contact_loss = ContactLoss(cfg, self.opt.contactloss, device=device)
-        self.object_dataset = instantiate(self.cfg.object_dataset)
+        if object_dataset is None:
+            self.object_dataset = instantiate(cfg.object_dataset, cfg=self.cfg, _recursive_=False)
+        else:
+            self.object_dataset = object_dataset
+        self.test_cnt = test_cnt
 
         # parameters
         self.s_params = torch.ones(
@@ -113,26 +118,30 @@ class TestTimeOptimize(LightningModule):
         )
 
         # Selector inference
-        object_selection = instantiate(
-            self.cfg.select_object,
-            cfg=self.cfg,
-            device=hand_verts_r.device,
-            _recursive_=False,
-        )
-        selector = pl.Trainer(
-            devices=len(self.cfg.devices), accelerator=self.accelerator
-        )
-        class_preds, shape_code = selector.predict(
-            object_selection,
-            dataloaders=predict_dataloader,
-            ckpt_path=self.cfg.selector.ckpt_path,
-        )[0]
+        if self.object_dataset.prev_cate is not None:
+            class_preds, shape_code = self.object_dataset.prev_cate
+        else:
+            object_selection = instantiate(
+                self.cfg.select_object,
+                cfg=self.cfg,
+                device=hand_verts_r.device,
+                _recursive_=False,
+            )
+            selector = pl.Trainer(
+                devices=len(self.cfg.devices), accelerator=self.accelerator
+            )
+            class_preds, shape_code = selector.predict(
+                object_selection,
+                dataloaders=predict_dataloader,
+                ckpt_path=self.cfg.selector.ckpt_path,
+            )[0]
+            self.object_dataset.prev_cate = (class_preds, shape_code)
 
         # load object data
         train_batch = []
         for b in range(batch_size):
             class_prediction = class_preds[b]
-            idx = self.object_dataset.get_idx(class_prediction, "trainset")
+            idx = self.object_dataset.get_idx(class_prediction, "trainset", batch_idx=b)
             train_batch.append(self.object_dataset[idx])
         train_batch = ObjectData.collate_fn(train_batch)
         data = ObjectData(**train_batch)
@@ -180,7 +189,8 @@ class TestTimeOptimize(LightningModule):
                     f"No checkpoint found for hand {self.handresult.fidxs[b]:08d}"
                 )
                 raise FileNotFoundError
-            ckpt = sorted(ckpts)[-1]
+            ckpt = sorted(ckpts)[self.test_cnt]
+            self.test_n = len(ckpts)
 
             # find object name
             match = re.search(pattern, ckpt)
@@ -269,30 +279,31 @@ class TestTimeOptimize(LightningModule):
             obj_verts_n_hires = obj_verts_hires
         else:
             # verts 124 37
-            hand_size = get_hand_size(
-                (self.handresult.mano_joints_r - self.handresult.center)
-                / self.handresult.max_norm.unsqueeze(1).unsqueeze(2)
-            )
+            joints_denorm = (self.handresult.mano_joints_r) / self.handresult.max_norm.unsqueeze(1).unsqueeze(2)
+            hand_size = get_hand_size(joints_denorm)
+            grip_size = get_grip_size(joints_denorm)
+            # How about the difference b/w _r's hand joint size and the output mesh's hand size?
             # hand_size = torch.norm(self.handresult.verts_n[:, 124] - self.handresult.verts_n[:, 37])
-            bbox_lengths = SelectObject.decompose_shape_code(shape_code, hand_size)
-            object_verts_n, scaling_fn, _ = scale_to_bbox(
-                object_verts, goal_scale=bbox_lengths
+            bbox_lengths = SelectObject.interpret_shape_code(shape_code, hand_size)
+            bbox_lengths = SelectObject.refine_bbox_lengths(bbox_lengths, grip_size, hand_size)
+            object_verts_n, premade_fn, _ = scale_by_bbox(
+                object_verts, bbox_lengths=bbox_lengths
             )
             if sampled_verts is not None:
-                sampled_verts_n, *_ = scale_to_bbox(
-                    sampled_verts, scaling_fn=scaling_fn
+                sampled_verts_n, *_ = scale_by_bbox(
+                    sampled_verts, premade_fn=premade_fn
                 )
             else:
                 sampled_verts_n = None
-            obj_verts_n_hires, *_ = scale_to_bbox(
-                obj_verts_hires, scaling_fn=scaling_fn
+            obj_verts_n_hires, *_ = scale_by_bbox(
+                obj_verts_hires, premade_fn=premade_fn
             )
 
         return object_verts_n, sampled_verts_n, obj_verts_n_hires
 
     def train_dataloader(self):
-        # loop Niters times
-        dummy_dataset = DummyDataset(self.opt.Niters)
+        # loop n_iters times
+        dummy_dataset = DummyDataset(self.opt.n_iters)
         loop = DataLoader(dummy_dataset, batch_size=1, shuffle=False, pin_memory=True)
         return loop
 
@@ -503,8 +514,12 @@ class TestTimeOptimize(LightningModule):
         obj_fidx = self.obj_fidx[0]
 
         # render image if wanted
+        merged_meshes, obj_verts_hires = self.merge_mesh(obj_verts_n_hires)
+        merged_meshes.verts_normals_packed()
         if self.opt.plot.render_eval:
-            rendered, blen_proj, blen_warp = self.render_blend(obj_verts_n_hires)
+            rendered, blen_proj, blen_warp = self.render_blend(
+                merged_meshes, obj_verts_hires
+            )
             # save
             save_render_dir = os.path.join(self.cfg.output_dir, "evaluations")
             if not os.path.exists(save_render_dir):
@@ -521,6 +536,16 @@ class TestTimeOptimize(LightningModule):
                 Image.fromarray(blen_proj[b]).save(save_proj_path)
                 if blen_warp[b] is not None:
                     Image.fromarray(blen_warp[b]).save(save_warp_path)
+
+        # create video 
+        # frames = self.handresult.renderer.render_360(merged_meshes)
+        # video_dir = os.path.join(self.cfg.output_dir, "videos")
+        # if not os.path.exists(video_dir):
+        #     os.makedirs(video_dir)
+        # video_path = os.path.join(video_dir, f"hand_{hand_fidx:08d}_object_{obj_fidx}.gif")
+        # duration = 1.0 / self.cfg.vis.video.fps
+        # frames[0].save(video_path, save_all=True, append_images=frames[1:], duration=duration, loop=0)
+        # logger.info(f"Saved video to {video_path}")
 
         # contact ratio
         *_, contact_info, metrics = self.contact_loss(
@@ -664,31 +689,21 @@ class TestTimeOptimize(LightningModule):
 
     def render_blend(
         self,
-        obj_verts_n_hires: PaddedTensor,
-        merged_meshes: Meshes = None,
-        obj_verts_hires: PaddedTensor = None,
+        merged_meshes: Meshes,
+        obj_verts_hires: PaddedTensor,
     ):
         """
         Hand comes from self
         """
-        # merge hand + object if not done
-        if merged_meshes is None:
-            assert obj_verts_hires is None
-            merged_meshes, obj_verts_hires = self.merge_mesh(obj_verts_n_hires)
-        else:
-            assert obj_verts_n_hires is None
-            assert obj_verts_hires is not None
-        merged_meshes.verts_normals_packed()
-
         # project hand + object
         projected, depth = self.handresult.renderer.render(merged_meshes)
         projected = projected.cpu().numpy()
         projected = projected * 255
         projected = projected.astype(np.uint8)
         projected = [projected[b] for b in range(self.handresult.batch_size)]
-        if self.cfg.vis.what_to_render == "hand_object":
+        if self.cfg.vis.render.what == "hand_object":
             out_rendered = projected
-        elif self.cfg.vis.what_to_render == "warped_object":
+        elif self.cfg.vis.render.what == "warped_object":
             # original image, hand mask
             img = self.handresult.images
             img_handmask = self.handresult.seg
@@ -752,29 +767,29 @@ class TestTimeOptimize(LightningModule):
                     proj_handocc[b], proj_handmask[b], M, img_handmask[b]
                 )
                 assert img_handocc.max() <= 1.0
-                img_valid = np.sum(img, axis=3) > 15
+                img_valid = np.sum(img[b], axis=2) > 15
                 warp[..., 3] = warp[..., 3] * img_handocc * img_valid
                 warp = warp.astype(np.uint8)
                 warped.append(warp)
             out_rendered = warped
         else:
-            logger.error(f"Invalid what_to_render: {self.cfg.vis.what_to_render}")
+            logger.error(f"Invalid render.what: {self.cfg.vis.render.what}")
             raise ValueError
 
         # blend
-        if self.cfg.vis.where_to_render == "raw":
+        if self.cfg.vis.render.where == "raw":
             background = self.handresult.images
-        elif self.cfg.vis.where_to_render == "inpainted":
+        elif self.cfg.vis.render.where == "inpainted":
             background = self.handresult.inpainted_images
         blended_projected = []
         for b in range(self.handresult.batch_size):
             blended = blend_images(
                 projected[b],
                 background[b],
-                blend_type=self.cfg.vis.blend_type,
+                blend_type=self.cfg.vis.render.blend,
             )
             blended_projected.append(blended)
-        if self.cfg.vis.what_to_render == "warped_object":
+        if self.cfg.vis.render.what == "warped_object":
             blended_warped = []
             for b in range(self.handresult.batch_size):
                 if warped[b] is None:
@@ -783,13 +798,13 @@ class TestTimeOptimize(LightningModule):
                 blended = blend_images(
                     warped[b],
                     background[b],
-                    blend_type=self.cfg.vis.blend_type,
+                    blend_type=self.cfg.vis.render.blend,
                 )
                 blended_warped.append(blended)
         else:
             blended_warped = None
         return out_rendered, blended_projected, blended_warped
-
+    
     def on_train_batch_end(self, outputs, batch, batch_idx):
         batch_size = self.handresult.batch_size
         transform = outputs["transform"]
@@ -823,8 +838,11 @@ class TestTimeOptimize(LightningModule):
 
             # rendering
             if self.update_mask.any() or batch_idx % self.opt.plot.render_period == 0:
+                if merged_meshes is None:
+                    merged_meshes, obj_verts_hires = self.merge_mesh(obj_verts_n_hires)
+                    merged_meshes.verts_normals_packed()
                 ren_images, blen_proj, blen_warp = self.render_blend(
-                    None, merged_meshes, obj_verts_hires
+                    merged_meshes, obj_verts_hires
                 )
                 for b in range(batch_size):
                     if (

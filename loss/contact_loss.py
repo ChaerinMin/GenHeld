@@ -220,8 +220,8 @@ class ContactLoss(Module):
         if self.contact_zones == "gen":
             assert sampled_verts is not None
             assert contact_object is not None and partition_object is not None
-            _, contact_zones = contact_utils.load_contacts(
-                "assets/contact_zones.pkl", display=True
+            contact_zones = contact_utils.load_contacts(
+                self.contact_file, display=True
             )  # palm, index, middle, ring, pinky, thumb
 
             # initializations
@@ -310,7 +310,7 @@ class ContactLoss(Module):
             missed_mask = missed_mask_original & tips
         elif self.contact_zones == "zones":
             # For each batch keep the closest point from the contact zone
-            _, contact_zones = contact_utils.load_contacts("assets/contact_zones.pkl")
+            contact_zones = contact_utils.load_contacts(self.contact_file)
             contact_matching = torch.zeros_like(missed_mask_original)
             for _, zone_idxs in contact_zones.items():
                 min_zone_vals, min_zone_idxs = minho[:, zone_idxs].min(1)

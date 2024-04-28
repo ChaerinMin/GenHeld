@@ -1,23 +1,27 @@
 import logging
+import copy
 
 import cv2
-import copy
 import numpy as np
 import torch
 from pytorch3d.renderer import (
     HardPhongShader,
+    SoftPhongShader,
     SoftSilhouetteShader,
     Materials,
     MeshRasterizer,
+    MeshRenderer,
     MeshRendererWithFragments,
     RasterizationSettings,
+    look_at_view_transform,
 )
-from pytorch3d.renderer.cameras import PerspectiveCameras
-from pytorch3d.renderer.lighting import PointLights
+from pytorch3d.renderer.cameras import PerspectiveCameras, OpenGLPerspectiveCameras, FoVPerspectiveCameras
+from pytorch3d.renderer.lighting import PointLights, DirectionalLights, AmbientLights
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from scipy.spatial import KDTree
+from PIL import Image
 
 from utils.joints import mediapipe_to_kp
 
@@ -25,21 +29,37 @@ logger = logging.getLogger(__name__)
 
 
 class Renderer:
-    def __init__(self, device, image_size, intrinsics):
+    def __init__(self, device, image_size, intrinsics, v_opt):
         self.device = device
-        raster_settings_soft = RasterizationSettings(
+        self.v_opt = v_opt
+        raster = RasterizationSettings(
             image_size=image_size,
             blur_radius=0.0,
             faces_per_pixel=1,
         )
+        # raster_360 = RasterizationSettings(
+        #     image_size=v_opt.image_size,
+        #     blur_radius=0.0,
+        #     faces_per_pixel=1,
+        # )
         materials = Materials(
             diffuse_color=((0.8, 0.8, 0.8),),
             specular_color=((0.2, 0.2, 0.2),),
             shininess=30,
             device=self.device,
         )
+        # materials_360 = Materials(
+        #     specular_color=[[0.0, 0.0, 0.0]],
+        #     shininess=0.0, 
+        #     device=self.device,
+        # )
 
         self.lighting = PointLights(device=self.device)
+        # self.lighting_360 = PointLights(
+        #     device=device, 
+        #     diffuse_color=[[0.8, 0.8, 0.8]],  
+        #     specular_color=[[0.1, 0.1, 0.1]] 
+        # )
 
         fxfy, cxcy = Renderer.ndc_fxfy_cxcy(intrinsics, image_size)
         self.cameras = PerspectiveCameras(
@@ -47,17 +67,23 @@ class Renderer:
         )
 
         self.renderer_p3d = MeshRendererWithFragments(
-            rasterizer=MeshRasterizer(raster_settings=raster_settings_soft),
+            rasterizer=MeshRasterizer(raster_settings=raster),
             shader=HardPhongShader(
                 materials=materials,
                 device=self.device,
             ),
         )
-
         self.renderer_wo_texture = MeshRendererWithFragments(
-            rasterizer=MeshRasterizer(raster_settings=raster_settings_soft),
+            rasterizer=MeshRasterizer(raster_settings=raster),
             shader=SoftSilhouetteShader(),
         )
+        # self.renderer_360 = MeshRenderer(
+        #     rasterizer=MeshRasterizer(raster_settings=raster_360),
+        #     shader=SoftPhongShader(
+        #         materials=materials_360, 
+        #         device=self.device
+        #     ),
+        # )
         return
 
     def render(self, meshes):
@@ -71,6 +97,23 @@ class Renderer:
             meshes, cameras=self.cameras
         )
         return rendered_images, fragments.zbuf
+    
+    # def render_360(self, meshes):
+    #     # move mesh to the origin
+    #     centriod = meshes.verts_packed().mean(0)
+    #     meshes.offset_verts_(-centriod)
+
+    #     # render
+    #     frames = []
+    #     for deg in range(0, 360, self.v_opt.degree):
+    #         R, T = look_at_view_transform(dist=self.v_opt.distance, elev=self.v_opt.elevation, azim=deg)
+    #         cameras = FoVPerspectiveCameras(device=self.device, R=R, T=T, fov=self.v_opt.fov)
+    #         frame = self.renderer_360(meshes, cameras=cameras, lights=self.lighting_360)
+    #         frame = frame[0, ..., :3].cpu().numpy()
+    #         frame = (frame * 255).astype(np.uint8)
+    #         frame = Image.fromarray(frame)
+    #         frames.append(frame)
+    #     return frames
 
     @staticmethod
     def ndc_fxfy_cxcy(Ks, image_size):

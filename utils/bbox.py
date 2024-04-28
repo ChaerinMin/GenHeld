@@ -20,7 +20,7 @@ def get_bbox(points):
     bbox_size = np.sort(bbox_size)[::-1]
     return bbox_size, bbox_corners
 
-def scale_to_bbox(points, goal_scale=None, scaling_fn=None, stay_aligned=True, dealignment_fn=None):
+def scale_by_bbox(points, bbox_lengths=None, premade_fn=None, stay_aligned=True, dealignment_fn=None):
     '''
     Yes batching
     '''
@@ -28,8 +28,8 @@ def scale_to_bbox(points, goal_scale=None, scaling_fn=None, stay_aligned=True, d
     batch_size = points.padded.shape[0]
     device = points.device
 
-    if scaling_fn is None:
-        assert goal_scale is not None and dealignment_fn is None
+    if premade_fn is None:
+        assert bbox_lengths is not None and dealignment_fn is None
         old_R = []
         old_t = []
         old_s = []
@@ -51,18 +51,18 @@ def scale_to_bbox(points, goal_scale=None, scaling_fn=None, stay_aligned=True, d
         old_s = torch.tensor(np.array(old_s), device=device)
         old_s_inv = 1 / (old_s + 1e-6)
         longest_orders = torch.tensor(np.array(longest_orders), device=device)
-        goal_scale = torch.gather(goal_scale, 1, longest_orders)
-        scaling_fn = Transform3d(device=device).translate(-old_t).rotate(old_R.transpose(1,2)).scale(old_s_inv * goal_scale)
+        bbox_lengths = torch.gather(bbox_lengths, 1, longest_orders)
+        premade_fn = Transform3d(device=device).translate(-old_t).rotate(old_R.transpose(1,2)).scale(old_s_inv * bbox_lengths)
     else:
-        assert goal_scale is None
+        assert bbox_lengths is None
         if not stay_aligned:
             assert dealignment_fn is not None
     
-    points.padded = scaling_fn.transform_points(points.padded)
+    points.padded = premade_fn.transform_points(points.padded)
     if not stay_aligned:
         if dealignment_fn is None:
             dealignment_fn = Transform3d(device=device).rotate(old_R).translate(old_t)
         points.padded = dealignment_fn.transform_points(points.padded)
     points.clean(points.split_sizes)
 
-    return points, scaling_fn, dealignment_fn
+    return points, premade_fn, dealignment_fn
