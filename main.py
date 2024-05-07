@@ -44,6 +44,7 @@ def main(cfg):
 
     # paths
     if cfg.optimizer.resume_dir:
+        cfg.optimizer.resume_dir = os.path.abspath(cfg.optimizer.resume_dir)
         cfg.output_dir = cfg.optimizer.resume_dir
         cfg.results_dir = os.path.join(cfg.output_dir, "results")
         if not os.path.exists(cfg.results_dir):
@@ -105,11 +106,13 @@ def main(cfg):
             check_val_every_n_epoch=cfg.select_object.opt.val.every_n_epoch,
         )
         if cfg.selector.ckpt_path:  # resume training
+            cfg.selector.ckpt_path = os.path.abspath(cfg.selector.ckpt_path)
             logger.warning(f"Resume from {cfg.selector.ckpt_path}")
             selector.fit(object_selection, ckpt_path=cfg.selector.ckpt_path)
         else:
             selector.fit(object_selection)
     elif cfg.selector.mode == "inference":
+        cfg.selector.ckpt_path = os.path.abspath(cfg.selector.ckpt_path)
         cfg.selector.ckpt_dir = os.path.dirname(cfg.selector.ckpt_path)
         reconstruction = ReconstructHand(cfg, accelerator, device)
         reconstructor = pl.Trainer(

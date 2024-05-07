@@ -598,6 +598,8 @@ class ObjectDataset(Dataset):
             object_verts, object_faces, object_aux = load_obj(
                 deci_path, load_textures=True
             )
+            material_name = list(object_aux.texture_images.keys())[0]
+            assert object_aux.texture_images[material_name].shape[:2] == self.object.texture_size, f"Object fidx: {fidx}, Deci texture image different from original texture image. And wrong size."
             if self.object.deci_as_output:
                 object_verts_highres = object_verts
                 object_faces_highres = object_faces

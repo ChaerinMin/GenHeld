@@ -133,7 +133,12 @@ class ObjaverseDataset(ObjectDataset):
                     logger.error(f"Something wrong")
                     raise ValueError
                 while True:
-                    uid_choice = random.choice(uids_unused)
+                    try:
+                        uid_choice = random.choice(uids_unused)
+                    except IndexError:
+                        print("Used idx:")
+                        print(self.used)
+                        raise IndexError
                     if uid_choice in self.used[batch_idx]:
                         uids_unused.remove(uid_choice)
                     else:
