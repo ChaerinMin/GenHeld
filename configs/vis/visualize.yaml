@@ -1,6 +1,6 @@
 render:
   where: "raw"  # choice: inpainted, raw
-  what: "warped_object" # choice: hand_object, warped_object
+  what: "moved_object" # choice: hand_object, warped_object, moved_object
   blend: "alpha_blending"  # choice: alpha_blending, poisson
 
 video:

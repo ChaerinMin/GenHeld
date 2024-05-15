@@ -12,6 +12,11 @@ def vis_keypoints(img: np.ndarray, kp, vis_lines=True) -> np.ndarray:
     eps = 0.01
     if kp is None:
         return img
+    if img.shape[-1] == 4:
+        alpha = img[..., 3]
+        img = img[..., :3]
+    else:
+        alpha = None
     output_canvas = np.copy(img)
     keypoints = np.copy(kp)
 
@@ -46,6 +51,9 @@ def vis_keypoints(img: np.ndarray, kp, vis_lines=True) -> np.ndarray:
                 hsv_to_rgb([ik / float(len(keypoints)), 1.0, 1.0]) * 255,
                 thickness=-1,
             )
+    
+    if alpha is not None:
+        output_canvas = np.concatenate([output_canvas, alpha[..., None]], axis=-1)
 
     return output_canvas
 

@@ -6,6 +6,7 @@ import re
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import cv2
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -200,7 +201,7 @@ class TestTimeOptimize(LightningModule):
             object_fidx = match.group(0)[7:-5]
 
             # find object data
-            idx = self.object_dataset.get_idx(object_fidx, "testset")
+            idx = self.object_dataset.get_idx(object_fidx, "testset", batch_idx=b)
             test_batch.append(self.object_dataset[idx])
 
             # load checkpoint
@@ -517,7 +518,7 @@ class TestTimeOptimize(LightningModule):
         merged_meshes, obj_verts_hires = self.merge_mesh(obj_verts_n_hires)
         merged_meshes.verts_normals_packed()
         if self.opt.plot.render_eval:
-            rendered, blen_proj, blen_warp = self.render_blend(
+            rendered, blen_proj, blen_warp, blen_kp = self.render_blend(
                 merged_meshes, obj_verts_hires
             )
             # save
@@ -531,11 +532,14 @@ class TestTimeOptimize(LightningModule):
                 )
                 save_proj_path = save_render_path.replace("rendering", "blended")
                 save_warp_path = save_render_path.replace("rendering", "warped")
+                save_kp_path = save_render_path.replace("rendering", "keypoints")
                 if rendered[b] is not None:
                     Image.fromarray(rendered[b]).save(save_render_path)
                 Image.fromarray(blen_proj[b]).save(save_proj_path)
                 if blen_warp[b] is not None:
                     Image.fromarray(blen_warp[b]).save(save_warp_path)
+                if blen_kp[b] is not None:
+                    Image.fromarray(blen_kp[b]).save(save_kp_path)
 
         # create video 
         # frames = self.handresult.renderer.render_360(merged_meshes)
@@ -701,39 +705,41 @@ class TestTimeOptimize(LightningModule):
         projected = projected * 255
         projected = projected.astype(np.uint8)
         projected = [projected[b] for b in range(self.handresult.batch_size)]
+
+        img = self.handresult.images
+        # project hand
+        material_name = list(self.handresult.aux["texture_images"].keys())[0]
+        texture_images = self.handresult.aux["texture_images"][material_name]
+        hand_textures = TexturesUV(
+            texture_images,
+            self.handresult.original_faces.textures_idx,
+            self.handresult.aux["verts_uvs"],
+        )
+        hand_meshes = Meshes(
+            self.handresult.original_verts,
+            self.handresult.original_faces.verts_idx,
+            hand_textures,
+        )
+        hand_meshes.verts_normals_packed()
+        proj_hand, depth_hand = self.handresult.renderer.render(hand_meshes)
+        proj_hand = proj_hand.cpu().numpy()
+        proj_hand = (proj_hand * 255).astype(np.uint8)
+        # projected hand mask
+        proj_handmask, depth_hand = self.handresult.renderer.render_wo_texture(
+            hand_meshes
+        )
+        proj_handmask = proj_handmask[..., 3]
+        proj_handmask = proj_handmask.cpu().numpy()
+        # projected hand occlusion
+        proj_handocc = depth != depth_hand
+        proj_handocc = proj_handocc.squeeze(3)
+        proj_handocc = proj_handocc.cpu().numpy().astype(np.float32)
+        
         if self.cfg.vis.render.what == "hand_object":
             out_rendered = projected
         elif self.cfg.vis.render.what == "warped_object":
-            # original image, hand mask
-            img = self.handresult.images
+            # original hand mask
             img_handmask = self.handresult.seg
-            # project hand
-            material_name = list(self.handresult.aux["texture_images"].keys())[0]
-            texture_images = self.handresult.aux["texture_images"][material_name]
-            hand_textures = TexturesUV(
-                texture_images,
-                self.handresult.original_faces.textures_idx,
-                self.handresult.aux["verts_uvs"],
-            )
-            hand_meshes = Meshes(
-                self.handresult.original_verts,
-                self.handresult.original_faces.verts_idx,
-                hand_textures,
-            )
-            hand_meshes.verts_normals_packed()
-            proj_hand, depth_hand = self.handresult.renderer.render(hand_meshes)
-            proj_hand = proj_hand.cpu().numpy()
-            proj_hand = (proj_hand * 255).astype(np.uint8)
-            # projected hand mask
-            proj_handmask, depth_hand = self.handresult.renderer.render_wo_texture(
-                hand_meshes
-            )
-            proj_handmask = proj_handmask[..., 3]
-            proj_handmask = proj_handmask.cpu().numpy()
-            # projected hand occlusion
-            proj_handocc = depth != depth_hand
-            proj_handocc = proj_handocc.squeeze(3)
-            proj_handocc = proj_handocc.cpu().numpy().astype(np.float32)
             # project object
             assert (
                 len(self.obj_aux_hires["texture_images"]) == 1
@@ -759,7 +765,7 @@ class TestTimeOptimize(LightningModule):
             # warp object & occlusion
             warped = []
             for b in range(self.handresult.batch_size):
-                warp, M = warp_object(proj_object[b], img[b], proj_hand[b, :, :, :3])
+                warp, M, *_ = warp_object(proj_object[b], img[b], proj_hand[b], warping="custom")
                 if warp is None:
                     warped.append(None)
                     continue
@@ -772,6 +778,26 @@ class TestTimeOptimize(LightningModule):
                 warp = warp.astype(np.uint8)
                 warped.append(warp)
             out_rendered = warped
+        elif self.cfg.vis.render.what == "moved_object":
+            # object only
+            out_rendered = np.array(projected).copy()
+            out_rendered[proj_handocc == 0] = 0
+            warped = []
+            kp_background = []
+            kp_warped = []
+            # translate object
+            for b in range(self.handresult.batch_size):
+                warp, M, kp_warp, kp_bg = warp_object(projected[b], img[b], proj_hand[b], warping="translate")
+                if warp is None:
+                    warped.append(None)
+                    kp_background.append(None)
+                    kp_warped.append(None)
+                    continue
+                out_rendered[b] = cv2.warpAffine(out_rendered[b], M, (out_rendered[b].shape[1], out_rendered[b].shape[0]))
+                kp_background.append(kp_bg)
+                kp_warped.append(kp_warp)
+                warp = warp.astype(np.uint8)
+                warped.append(warp)
         else:
             logger.error(f"Invalid render.what: {self.cfg.vis.render.what}")
             raise ValueError
@@ -789,7 +815,8 @@ class TestTimeOptimize(LightningModule):
                 blend_type=self.cfg.vis.render.blend,
             )
             blended_projected.append(blended)
-        if self.cfg.vis.render.what == "warped_object":
+        blended_warped = None
+        if self.cfg.vis.render.what in ["warped_object", "moved_object"]:
             blended_warped = []
             for b in range(self.handresult.batch_size):
                 if warped[b] is None:
@@ -801,9 +828,20 @@ class TestTimeOptimize(LightningModule):
                     blend_type=self.cfg.vis.render.blend,
                 )
                 blended_warped.append(blended)
-        else:
-            blended_warped = None
-        return out_rendered, blended_projected, blended_warped
+        blended_kp = None
+        if self.cfg.vis.render.what == "moved_object":
+            blended_kp = []
+            for b in range(self.handresult.batch_size):
+                if kp_warped[b] is None:
+                    blended_kp.append(None)
+                    continue
+                blended = blend_images(
+                    kp_warped[b],
+                    kp_background[b],
+                    blend_type=self.cfg.vis.render.blend,
+                )
+                blended_kp.append(blended)
+        return out_rendered, blended_projected, blended_warped, blended_kp
     
     def on_train_batch_end(self, outputs, batch, batch_idx):
         batch_size = self.handresult.batch_size
@@ -841,7 +879,7 @@ class TestTimeOptimize(LightningModule):
                 if merged_meshes is None:
                     merged_meshes, obj_verts_hires = self.merge_mesh(obj_verts_n_hires)
                     merged_meshes.verts_normals_packed()
-                ren_images, blen_proj, blen_warp = self.render_blend(
+                ren_images, blen_proj, blen_warp, blen_kp = self.render_blend(
                     merged_meshes, obj_verts_hires
                 )
                 for b in range(batch_size):
@@ -864,6 +902,7 @@ class TestTimeOptimize(LightningModule):
                         )
                         out_proj_path = out_ren_path.replace("rendering", "blended")
                         out_warp_path = out_ren_path.replace("rendering", "warped")
+                        out_kp_path = out_ren_path.replace("rendering", "keypoints")
                         if ren_images[b] is not None:
                             Image.fromarray(ren_images[b]).save(out_ren_path)
                             logger.info(f"Saved {out_ren_path}")
@@ -872,10 +911,13 @@ class TestTimeOptimize(LightningModule):
                         if blen_warp[b] is not None:
                             Image.fromarray(blen_warp[b]).save(out_warp_path)
                             logger.info(f"Saved {out_warp_path}")
+                        if blen_kp[b] is not None:
+                            Image.fromarray(blen_kp[b]).save(out_kp_path)
+                            logger.info(f"Saved {out_kp_path}")
 
             # plot force closure normal
             if self.opt.loss.force_closure_weight > 0:
-                is_period = batch_idx % self.opt.plot.force_closure_period == 0
+                is_period = batch_idx % self.opt.plot.force_closure_period == self.opt.plot.force_closure_period - 1
                 if self.update_mask.any() or is_period:
                     self.contact_loss.plot_fc_normal(
                         hand_fidxs=self.handresult.fidxs,

@@ -24,6 +24,7 @@ from scipy.spatial import KDTree
 from PIL import Image
 
 from utils.joints import mediapipe_to_kp
+from visualization.joints import vis_keypoints
 
 logger = logging.getLogger(__name__)
 
@@ -162,16 +163,19 @@ def blend_images(foreground, background, use_alpha=True, blend_type="alpha_blend
     return blended_image
 
 
-def warp_object(src_object, dst, src):
+def warp_object(src_object, dst, src, warping=None):
     """
     Translate object by hand root
     No batching
+    warping: "custom", "translate"
     """
     base_options = mp_python.BaseOptions(
         model_asset_path="assets/mediapipe/hand_landmarker.task"
     )
     options = mp_vision.HandLandmarkerOptions(base_options=base_options, num_hands=1, min_hand_detection_confidence=0.16, min_hand_presence_confidence=0.16)
     hand_landmarker = mp_vision.HandLandmarker.create_from_options(options=options)
+    src_original = src
+    src = src[...,:3]
     src = copy.deepcopy(src)
     src_pts = hand_landmarker.detect(
         mp.Image(image_format=mp.ImageFormat.SRGB, data=src)
@@ -183,12 +187,21 @@ def warp_object(src_object, dst, src):
         return None, None
     src_pts = mediapipe_to_kp(src_pts, src.shape[:2])
     dst_pts = mediapipe_to_kp(dst_pts, dst.shape[:2])
-    tr2 = dst_pts[2, :] - src_pts[2, :]
-    tr4 = dst_pts[4, :] - src_pts[4, :]
-    tr = (tr2 + tr4) / 2
-    M = np.array([[1, 0, tr[0]], [0, 1, tr[1]]], dtype=np.float32)
+    kp_warp = vis_keypoints(src_original, src_pts)
+    kp_bg = vis_keypoints(dst, dst_pts)
+    if warping == "custom":
+        tr2 = dst_pts[2, :] - src_pts[2, :]
+        tr4 = dst_pts[4, :] - src_pts[4, :]
+        tr = (tr2 + tr4) / 2
+        M = np.array([[1, 0, tr[0]], [0, 1, tr[1]]], dtype=np.float32)
+    elif warping == "translate":
+        tr = np.mean(dst_pts - src_pts, axis=0)
+        M = np.array([[1, 0, tr[0]], [0, 1, tr[1]]], dtype=np.float32)
+    else:
+        logger.error(f"Unknown warping: {warping}")
+        raise ValueError
     dst_object = cv2.warpAffine(src_object, M, (dst.shape[1], dst.shape[0]))
-    return dst_object, M
+    return dst_object, M, kp_warp, kp_bg
 
 
 def warp_occ(src_occ, src_mask, M, dst_mask):
