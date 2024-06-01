@@ -50,7 +50,7 @@ Download all files and folders from https://drive.google.com/drive/folders/1klKI
 ```bash
 GenHeld
 |-- assets
-|   |-- contact_zones.pkl
+|   |-- contact_zones.json
 |   |-- lama
 |   |   |-- big-lama
 |   |   |   |-- ...
@@ -119,3 +119,81 @@ GenHeld
 |-- main.py
 |-- ...
 ```
+
+### [Objaverse](https://objaverse.allenai.org/)
+
+Download the preprocessed data from https://drive.google.com/drive/folders/1xVGupsuKQnV8GSOnLJepU0FUBPqsv5zy?usp=sharing and make symbolic link if you want, `ln -s <abs path to Objaverse> data/` 
+
+Then, your file system should look like below.
+
+```bash
+GenHeld
+|-- data
+|   |-- FreiHAND
+|   |   |-- evaluation
+|   |   |-- ...
+|   |-- YCB
+|   |   |-- 001_chips_can
+|   |   |-- ...
+|   |-- Objaverse
+|   |   |-- banana
+|   |   |-- ...
+|-- main.py
+|-- ...
+```
+
+# Demo 
+We provide the fitted GenHeld 3D on famous people in [demo](https://drive.google.com/file/d/1rmMEAfVepaHf_saVLUEryUPGpRM5o-sf/view?usp=sharing). Check it out!
+
+# GenHeld 3D
+
+![3D_arch](readme_imgs/3D_arch.png)
+
+## Object Selection Network
+
+To use the **pretrained** Object Selection network, make sure the path to the checkpoint is same as ckpt_path under selector in the `configs/config.yaml` file. Then, <span style="color:red">proceed to the Object Fitting</span>.
+
+If you want to train by yourself,  Preprocessed [DexYCB](https://dex-ycb.github.io/) data is at https://drive.google.com/drive/folders/1hXV1FASFe2qa9oDPlcuAqQWS9wkVDbVT?usp=sharing . Zip the file and place it under `data` with name `DexYCB` and run
+
+```bash
+python main.py selector.mode=train selector.ckpt_path=""
+```
+
+## Object Fitting 
+
+We provide the pre-fitted results at https://drive.google.com/drive/folders/1ADdnR9WYFwQ5KUn0YdXnf0jpV0GhceVd?usp=sharing Make a directory named `outputs/prefit` and put the files under it. 
+
+```bash
+GenHeld
+|-- outputs
+|   |-- prefit
+|   |   |-- checkpoints
+|   |   |-- ...
+|-- main.py
+```
+
+To run the evaluation, 
+
+```bash
+python main.py object_dataset=ycb select_object=category selector.ckpt_path=assets/selector_checkpoints/epoch=151-step=456.ckpt optimizer.mode=evaluate optimizer.resume_dir=outputs/prefit/
+```
+
+### Object fitting by yourself
+
+You might want to run the Object Selection Network and fit the object by yourself. To do this, 
+
+
+```bash
+python main.py optimizer.mode=optimize
+```
+
+# GenHeld 2D
+
+![2D_arch](readme_imgs/2D_arch.png)
+
+We hinge our GenHeld3D upon [DiffEditor](https://github.com/MC-E/DragonDiffusion) to achieve GenHeld2D. Install [DiffEditor](https://github.com/MC-E/DragonDiffusion) and open the gradio (`python app.py`). 
+
+
+In the `Object pasting` tab, put the input image as `Original image` and put the `xx_warped.png` as `Reference image`. `xx_warped.png` will be under either `outputs/xx/xx/evaluations` (if you only run evaluation) or `outputs/xx/xx/results`. Make a box around the object and run. 
+
+![diffeditor](readme_imgs/diffeditor.png)

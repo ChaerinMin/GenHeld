@@ -194,7 +194,6 @@ class HandDataset(Dataset):
             seg = Resize(image.shape[0])(seg[None, None, ...])[0][0]
         image = torch.from_numpy(image)
 
-
         # image -> hand mesh
         hand_path = self.cached.hand.path % fidx
         mano_r_path = self.cached.mano_r.path % fidx

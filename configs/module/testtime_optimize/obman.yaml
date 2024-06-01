@@ -1,8 +1,8 @@
-n_obj: 4
+n_obj: 1
 n_iters: 3500
 scale_clip: [0.9, 1.02]
-start_fidx: 84
-end_fidx: 500
+start_fidx: null
+end_fidx: null
 
 lr_init: 0.1
 lr_type: "StepLR"

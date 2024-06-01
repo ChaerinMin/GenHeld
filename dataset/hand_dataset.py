@@ -3,8 +3,6 @@ import torch
 import logging
 import os
 import re
-import cv2 
-import numpy as np
 
 from .base_dataset import HandDataset
 
@@ -64,7 +62,5 @@ class FreiHANDDataset(HandDataset):
     def __getitem__(self, idx):
         return_dict = super().__getitem__(idx)
         seg = return_dict["seg"].numpy()
-        # kernel = np.ones((7,7), np.uint8)
-        # seg = cv2.erode(seg, kernel, iterations=1)
         return_dict["seg"] = torch.tensor(seg)
         return return_dict
