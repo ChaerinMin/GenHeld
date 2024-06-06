@@ -2,7 +2,7 @@
 
 ### [Paper]() | [Project Page]()
 
-<img src="readme_imgs/teaser.png" width="70%"/>
+<img src="readme_imgs/teaser.png" width="85%"/>
 
 # Installation
 
