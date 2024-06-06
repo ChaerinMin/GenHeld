@@ -1,8 +1,14 @@
+# GenHeld: Generating and Editing HandHeld Objects
+
+### [Paper]() | [Project Page]()
+
+<img src="readme_imgs/teaser.png" width="35%"/>
+
+# Installation
+
 ```bash
 git clone --recursive https://github.com/ChaerinMin/GenHeld.git
 ```
-
-# Installation
 
 This code was implemented under `Ubuntu 22.04`, `NVIDIA RTX 4060 Ti`, `cuda 11.8`, and `gcc 10.5.0`.
 
@@ -142,9 +148,6 @@ GenHeld
 |-- ...
 ```
 
-# Demo 
-We provide the fitted GenHeld 3D on famous people in [demo](https://drive.google.com/file/d/1rmMEAfVepaHf_saVLUEryUPGpRM5o-sf/view?usp=sharing). Check it out!
-
 # GenHeld 3D
 
 ![3D_arch](readme_imgs/3D_arch.png)
@@ -153,7 +156,7 @@ We provide the fitted GenHeld 3D on famous people in [demo](https://drive.google
 
 To use the **pretrained** Object Selection network, make sure the path to the checkpoint is same as ckpt_path under selector in the `configs/config.yaml` file. Then, <span style="color:red">proceed to the Object Fitting</span>.
 
-If you want to train by yourself,  Preprocessed [DexYCB](https://dex-ycb.github.io/) data is at https://drive.google.com/drive/folders/1hXV1FASFe2qa9oDPlcuAqQWS9wkVDbVT?usp=sharing . Zip the file and place it under `data` with name `DexYCB` and run
+If you want to train by yourself,  download [DexYCB](https://dex-ycb.github.io/) and place it under `data/` with name `DexYCB`, and run
 
 ```bash
 python main.py selector.mode=train selector.ckpt_path=""
@@ -197,3 +200,5 @@ We hinge our GenHeld3D upon [DiffEditor](https://github.com/MC-E/DragonDiffusion
 In the `Object pasting` tab, put the input image as `Original image` and put the `xx_warped.png` as `Reference image`. `xx_warped.png` will be under either `outputs/xx/xx/evaluations` (if you only run evaluation) or `outputs/xx/xx/results`. Make a box around the object and run. 
 
 ![diffeditor](readme_imgs/diffeditor.png)
+
+# Citation
