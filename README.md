@@ -1,6 +1,6 @@
 # GenHeld: Generating and Editing HandHeld Objects
 
-### [Paper]() | [Project Page]()
+### [Paper](https://arxiv.org/abs/2406.05059) | [Project Page]()
 
 <img src="readme_imgs/teaser.png" width="85%"/>
 
@@ -202,3 +202,12 @@ In the `Object pasting` tab, put the input image as `Original image` and put the
 ![diffeditor](readme_imgs/diffeditor.png)
 
 # Citation
+
+    @misc{min2024genheld,
+        title={GenHeld: Generating and Editing Handheld Objects}, 
+        author={Chaerin Min and Srinath Sridhar},
+        year={2024},
+        eprint={2406.05059},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV}
+    }
