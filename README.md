@@ -1,6 +1,6 @@
 # GenHeld: Generating and Editing HandHeld Objects
 
-### [Paper](https://arxiv.org/abs/2406.05059) | [Project Page]()
+### [Paper](https://arxiv.org/abs/2406.05059) | [Project Page](https://ivl.cs.brown.edu/research/genheld.html)
 
 <img src="readme_imgs/teaser.png" width="85%"/>
 
