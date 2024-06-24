@@ -2,7 +2,6 @@
 
 ### [Paper](https://arxiv.org/abs/2406.05059) | [Project Page](https://ivl.cs.brown.edu/research/genheld.html)
 
-<img src="readme_imgs/teaser.png" width="85%"/>
 
 # Installation
 
@@ -200,6 +199,9 @@ We hinge our GenHeld3D upon [DiffEditor](https://github.com/MC-E/DragonDiffusion
 In the `Object pasting` tab, put the input image as `Original image` and put the `xx_warped.png` as `Reference image`. `xx_warped.png` will be under either `outputs/xx/xx/evaluations` (if you only run evaluation) or `outputs/xx/xx/results`. Make a box around the object and run. 
 
 ![diffeditor](readme_imgs/diffeditor.png)
+
+# Acknowledgement
+This work was supported by NASA grant #80NSSC23M0075, and NSF CAREER grant #2143576.
 
 # Citation
 
